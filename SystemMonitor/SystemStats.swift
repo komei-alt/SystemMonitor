@@ -23,13 +23,17 @@ final class SystemStats {
     var uploadHistory: [Double] = Array(repeating: 0, count: 60)
     var downloadHistory: [Double] = Array(repeating: 0, count: 60)
 
+    // MARK: - Settings (observable)
+
+    var speedUnit: SpeedUnit = .megabytes
+
     // MARK: - Menu Bar
 
     var menuBarText: String {
         let cpu = String(format: "CPU %2.0f%%", cpuUsage)
         let mem = String(format: "MEM %2.0f%%", memoryPercent)
-        let up  = "↑\(Self.formatSpeed(networkUpSpeed))"
-        let dn  = "↓\(Self.formatSpeed(networkDownSpeed))"
+        let up  = "↑\(Self.formatSpeed(networkUpSpeed, unit: speedUnit))"
+        let dn  = "↓\(Self.formatSpeed(networkDownSpeed, unit: speedUnit))"
         return "\(cpu)  \(mem)  \(up) \(dn)"
     }
 
@@ -39,23 +43,59 @@ final class SystemStats {
     private var previousCPUTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
     private var previousNetworkBytes: (sent: UInt64, received: UInt64)?
     private var lastUpdateTime: Date?
+    private var currentInterval: Double = 2.0
+    private var defaultsObserver: Any?
 
     // MARK: - Lifecycle
 
     init() {
         memoryTotal = ProcessInfo.processInfo.physicalMemory
+        syncSettings()
         startMonitoring()
+
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.syncSettings()
+        }
     }
 
     deinit {
         timer?.invalidate()
+        if let observer = defaultsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    // MARK: - Settings Sync
+
+    private func syncSettings() {
+        // Speed unit
+        let unitRaw = UserDefaults.standard.string(forKey: "speedUnit") ?? SpeedUnit.megabytes.rawValue
+        speedUnit = SpeedUnit(rawValue: unitRaw) ?? .megabytes
+
+        // Update interval
+        let stored = UserDefaults.standard.double(forKey: "updateInterval")
+        let newInterval = stored > 0 ? stored : 2.0
+        if newInterval != currentInterval {
+            currentInterval = newInterval
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
+                self?.update()
+            }
+            RunLoop.main.add(timer!, forMode: .common)
+        }
     }
 
     // MARK: - Monitoring
 
     func startMonitoring() {
+        let stored = UserDefaults.standard.double(forKey: "updateInterval")
+        currentInterval = stored > 0 ? stored : 2.0
         update()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
             self?.update()
         }
         RunLoop.main.add(timer!, forMode: .common)
@@ -230,19 +270,25 @@ final class SystemStats {
         }
     }
 
-    static func formatSpeed(_ bytesPerSec: UInt64) -> String {
-        let kb = Double(bytesPerSec) / 1_024
-        let mb = kb / 1_024
-        let gb = mb / 1_024
-
-        if gb >= 1.0 {
-            return String(format: "%.1fGB/s", gb)
-        } else if mb >= 1.0 {
-            return String(format: "%.1fMB/s", mb)
-        } else if kb >= 1.0 {
-            return String(format: "%.0fKB/s", kb)
-        } else {
+    static func formatSpeed(_ bytesPerSec: UInt64, unit: SpeedUnit = .megabytes) -> String {
+        switch unit {
+        case .megabytes:
+            let kb = Double(bytesPerSec) / 1_024
+            let mb = kb / 1_024
+            let gb = mb / 1_024
+            if gb >= 1.0 { return String(format: "%.1fGB/s", gb) }
+            if mb >= 1.0 { return String(format: "%.1fMB/s", mb) }
+            if kb >= 1.0 { return String(format: "%.0fKB/s", kb) }
             return String(format: "%lluB/s", bytesPerSec)
+        case .megabits:
+            let bps  = Double(bytesPerSec) * 8
+            let kbps = bps / 1_000
+            let mbps = kbps / 1_000
+            let gbps = mbps / 1_000
+            if gbps >= 1.0 { return String(format: "%.1fGb/s", gbps) }
+            if mbps >= 1.0 { return String(format: "%.1fMb/s", mbps) }
+            if kbps >= 1.0 { return String(format: "%.0fKb/s", kbps) }
+            return String(format: "%.0fb/s", bps)
         }
     }
 

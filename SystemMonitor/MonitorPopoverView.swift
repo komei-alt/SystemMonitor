@@ -4,6 +4,17 @@ import Charts
 struct MonitorPopoverView: View {
     var stats: SystemStats
 
+    @AppStorage("cpuColor")         private var cpuColorName     = "blue"
+    @AppStorage("memoryColor")      private var memoryColorName  = "green"
+    @AppStorage("networkUpColor")   private var netUpColorName   = "orange"
+    @AppStorage("networkDownColor") private var netDownColorName = "purple"
+    @AppStorage("updateInterval")   private var updateInterval: Double = 2.0
+
+    private var cpuColor:     Color { ThemeColor(rawValue: cpuColorName)?.color     ?? .blue }
+    private var memColor:     Color { ThemeColor(rawValue: memoryColorName)?.color  ?? .green }
+    private var netUpColor:   Color { ThemeColor(rawValue: netUpColorName)?.color   ?? .orange }
+    private var netDownColor: Color { ThemeColor(rawValue: netDownColorName)?.color ?? .purple }
+
     var body: some View {
         VStack(spacing: 16) {
             header
@@ -40,7 +51,7 @@ struct MonitorPopoverView: View {
             title: "CPU",
             value: String(format: "%.1f%%", stats.cpuUsage),
             progress: stats.cpuUsage / 100.0,
-            color: .blue,
+            color: cpuColor,
             history: stats.cpuHistory,
             maxValue: 100
         )
@@ -54,7 +65,7 @@ struct MonitorPopoverView: View {
             title: "Memory",
             value: "\(SystemStats.formatBytes(stats.memoryUsed)) / \(SystemStats.formatBytes(stats.memoryTotal))",
             progress: stats.memoryPercent / 100.0,
-            color: .green,
+            color: memColor,
             history: stats.memoryHistory,
             maxValue: 100
         )
@@ -66,7 +77,7 @@ struct MonitorPopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "network")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(netUpColor)
                 Text("Network")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
@@ -76,41 +87,41 @@ struct MonitorPopoverView: View {
                 speedLabel(
                     icon: "arrow.up.circle.fill",
                     speed: stats.networkUpSpeed,
-                    color: .orange
+                    color: netUpColor
                 )
                 Spacer()
                 speedLabel(
                     icon: "arrow.down.circle.fill",
                     speed: stats.networkDownSpeed,
-                    color: .purple
+                    color: netDownColor
                 )
             }
 
             VStack(spacing: 6) {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(.orange)
+                        .fill(netUpColor)
                         .frame(width: 6, height: 6)
                     Text("Upload")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                MiniGraphView(data: stats.uploadHistory, color: .orange)
+                MiniGraphView(data: stats.uploadHistory, color: netUpColor)
                     .frame(height: 32)
             }
 
             VStack(spacing: 6) {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(.purple)
+                        .fill(netDownColor)
                         .frame(width: 6, height: 6)
                     Text("Download")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                MiniGraphView(data: stats.downloadHistory, color: .purple)
+                MiniGraphView(data: stats.downloadHistory, color: netDownColor)
                     .frame(height: 32)
             }
         }
@@ -123,7 +134,7 @@ struct MonitorPopoverView: View {
             Image(systemName: icon)
                 .foregroundStyle(color)
                 .font(.body)
-            Text(SystemStats.formatSpeed(speed))
+            Text(SystemStats.formatSpeed(speed, unit: stats.speedUnit))
                 .font(.system(.title3, design: .rounded).weight(.medium))
                 .monospacedDigit()
         }
@@ -133,10 +144,16 @@ struct MonitorPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text("Updates every 2s")
+            Text("Updates every \(Int(updateInterval))s")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .font(.subheadline)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {

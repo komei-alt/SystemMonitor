@@ -12,5 +12,9 @@ struct SystemMonitorApp: App {
                 .monospacedDigit()
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+        }
     }
 }

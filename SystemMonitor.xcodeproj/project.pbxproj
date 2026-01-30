@@ -12,6 +12,7 @@
 		E10000000000000000000003 /* MonitorPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000003; };
 		E10000000000000000000004 /* MiniGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000004; };
 		E10000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005; };
+		E10000000000000000000006 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000008; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		E20000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E20000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		E20000000000000000000007 /* SystemMonitor.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SystemMonitor.entitlements; sourceTree = "<group>"; };
+		E20000000000000000000008 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E30000000000000000000001 /* SystemMonitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SystemMonitor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -51,6 +53,7 @@
 				E20000000000000000000002 /* SystemStats.swift */,
 				E20000000000000000000003 /* MonitorPopoverView.swift */,
 				E20000000000000000000004 /* MiniGraphView.swift */,
+				E20000000000000000000008 /* SettingsView.swift */,
 				E20000000000000000000005 /* Assets.xcassets */,
 				E20000000000000000000006 /* Info.plist */,
 				E20000000000000000000007 /* SystemMonitor.entitlements */,
@@ -140,6 +143,7 @@
 				E10000000000000000000002 /* SystemStats.swift in Sources */,
 				E10000000000000000000003 /* MonitorPopoverView.swift in Sources */,
 				E10000000000000000000004 /* MiniGraphView.swift in Sources */,
+				E10000000000000000000006 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
