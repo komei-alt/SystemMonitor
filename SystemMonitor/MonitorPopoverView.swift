@@ -4,10 +4,10 @@ import Charts
 struct MonitorPopoverView: View {
     var stats: SystemStats
 
-    @AppStorage("cpuColor")         private var cpuColorName     = "blue"
-    @AppStorage("memoryColor")      private var memoryColorName  = "green"
-    @AppStorage("networkUpColor")   private var netUpColorName   = "orange"
-    @AppStorage("networkDownColor") private var netDownColorName = "purple"
+    @AppStorage("cpuColor")         private var cpuColorName     = ThemeColor.blue.rawValue
+    @AppStorage("memoryColor")      private var memoryColorName  = ThemeColor.green.rawValue
+    @AppStorage("networkUpColor")   private var netUpColorName   = ThemeColor.orange.rawValue
+    @AppStorage("networkDownColor") private var netDownColorName = ThemeColor.purple.rawValue
     @AppStorage("updateInterval")   private var updateInterval: Double = 2.0
 
     private var cpuColor:     Color { ThemeColor(rawValue: cpuColorName)?.color     ?? .blue }
@@ -20,6 +20,7 @@ struct MonitorPopoverView: View {
             header
             cpuSection
             memorySection
+            topProcessesSection
             networkSection
 
             Divider()
@@ -69,6 +70,73 @@ struct MonitorPopoverView: View {
             history: stats.memoryHistory,
             maxValue: 100
         )
+    }
+
+    // MARK: - Top Processes
+
+    private var topProcessesSection: some View {
+        HStack(alignment: .top, spacing: 12) {
+            processList(
+                title: "CPU Top",
+                icon: "flame.fill",
+                processes: stats.topCPUProcesses,
+                color: cpuColor,
+                valueLabel: { String(format: "%.1f%%", $0.cpu) }
+            )
+            processList(
+                title: "Memory Top",
+                icon: "memorychip.fill",
+                processes: stats.topMemoryProcesses,
+                color: memColor,
+                valueLabel: { SystemStats.formatBytes($0.memory) }
+            )
+        }
+    }
+
+    private func processList(
+        title: String,
+        icon: String,
+        processes: [ProcessUsage],
+        color: Color,
+        valueLabel: @escaping (ProcessUsage) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+            }
+            if processes.isEmpty {
+                Text("--")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                ForEach(Array(processes.enumerated()), id: \.element.id) { i, proc in
+                    HStack(spacing: 4) {
+                        Text("\(i + 1)")
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .frame(width: 14, height: 14)
+                            .background(color.opacity(i == 0 ? 1.0 : i == 1 ? 0.6 : 0.35), in: Circle())
+                        Text(proc.name)
+                            .font(.system(size: 10))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 2)
+                        Text(valueLabel(proc))
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(color)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Network
@@ -150,15 +218,13 @@ struct MonitorPopoverView: View {
             Spacer()
             SettingsLink {
                 Image(systemName: "gearshape")
-                    .font(.subheadline)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            Button {
+            .help("Settings")
+            
+            Button("Quit") {
                 NSApplication.shared.terminate(nil)
-            } label: {
-                Text("Quit")
-                    .font(.subheadline)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)

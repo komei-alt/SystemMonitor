@@ -1,6 +1,15 @@
 import Foundation
 import Observation
 
+// MARK: - プロセス使用量モデル
+
+struct ProcessUsage: Identifiable {
+    let id = UUID()
+    let name: String
+    let cpu: Double      // CPU使用率 (%)
+    let memory: UInt64   // メモリ使用量 (bytes)
+}
+
 @Observable
 final class SystemStats {
 
@@ -22,6 +31,11 @@ final class SystemStats {
     var networkDownSpeed: UInt64 = 0
     var uploadHistory: [Double] = Array(repeating: 0, count: 60)
     var downloadHistory: [Double] = Array(repeating: 0, count: 60)
+
+    // MARK: - Top Processes
+
+    var topCPUProcesses: [ProcessUsage] = []
+    var topMemoryProcesses: [ProcessUsage] = []
 
     // MARK: - Settings (observable)
 
@@ -105,6 +119,7 @@ final class SystemStats {
         updateCPU()
         updateMemory()
         updateNetwork()
+        updateTopProcesses()
         lastUpdateTime = Date()
     }
 
@@ -259,6 +274,71 @@ final class SystemStats {
         }
 
         return (totalSent, totalReceived)
+    }
+
+    // MARK: - Top Processes Monitoring
+
+    private func updateTopProcesses() {
+        // ps で全プロセスの CPU% / RSS(KB) / コマンド名を取得
+        guard let output = runPS() else { return }
+
+        struct RawProc {
+            let name: String
+            let cpu: Double
+            let memKB: UInt64
+        }
+
+        var procs: [RawProc] = []
+
+        for line in output.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+
+            // "  3.2  123456 /path/to/Executable" 形式をパース
+            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count >= 3,
+                  let cpu = Double(parts[0]),
+                  let rss = UInt64(parts[1]) else { continue }
+
+            // パスから実行ファイル名だけ抽出
+            let rawName = String(parts[2])
+            let displayName = URL(fileURLWithPath: rawName).lastPathComponent
+
+            procs.append(RawProc(name: displayName, cpu: cpu, memKB: rss))
+        }
+
+        // CPU使用率 Top 3（0%は除外）
+        topCPUProcesses = procs
+            .filter { $0.cpu > 0 }
+            .sorted { $0.cpu > $1.cpu }
+            .prefix(3)
+            .map { ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024) }
+
+        // メモリ使用量 Top 3
+        topMemoryProcesses = procs
+            .sorted { $0.memKB > $1.memKB }
+            .prefix(3)
+            .map { ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024) }
+    }
+
+    /// ps コマンドを実行して stdout を返す
+    private func runPS() -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-Ao", "pcpu=,rss=,comm="]
+
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - Helpers
