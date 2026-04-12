@@ -70,11 +70,13 @@ struct MenuBarLabel: View {
 
     @AppStorage("cpuColor")         private var cpuColorName     = ThemeColor.blue.rawValue
     @AppStorage("memoryColor")      private var memoryColorName  = ThemeColor.green.rawValue
+    @AppStorage("gpuColor")         private var gpuColorName     = ThemeColor.yellow.rawValue
     @AppStorage("networkUpColor")   private var netUpColorName   = ThemeColor.orange.rawValue
     @AppStorage("networkDownColor") private var netDownColorName = ThemeColor.purple.rawValue
     @AppStorage("menuBarSize")      private var menuBarSizeRaw   = MenuBarSize.compact.rawValue
     @AppStorage("compactShowCPU")     private var compactShowCPU     = true
     @AppStorage("compactShowRAM")     private var compactShowRAM     = true
+    @AppStorage("compactShowGPU")     private var compactShowGPU     = false
     @AppStorage("compactShowNetwork") private var compactShowNetwork = true
 
     var body: some View {
@@ -89,6 +91,7 @@ struct MenuBarLabel: View {
     private func renderImage() -> NSImage {
         let cpuNS  = ThemeColor(rawValue: cpuColorName)?.nsColor     ?? .systemBlue
         let memNS  = ThemeColor(rawValue: memoryColorName)?.nsColor  ?? .systemGreen
+        let gpuNS  = ThemeColor(rawValue: gpuColorName)?.nsColor     ?? .systemYellow
         let upNS   = ThemeColor(rawValue: netUpColorName)?.nsColor   ?? .systemOrange
         let downNS = ThemeColor(rawValue: netDownColorName)?.nsColor ?? .systemPurple
 
@@ -123,12 +126,13 @@ struct MenuBarLabel: View {
             return rasterize(size: imgSize) { str.draw(at: .zero) }
         }
 
-        // コンパクト: 2段レイアウト（CPU+↑ / RAM+↓）
+        // コンパクト: 2段レイアウト（選択項目 + ネットワーク速度）
         let showCPU = compactShowCPU
         let showRAM = compactShowRAM
+        let showGPU = compactShowGPU
         let showNet = compactShowNetwork
 
-        if !showCPU && !showRAM && !showNet {
+        if !showCPU && !showRAM && !showGPU && !showNet {
             return NSImage(size: NSSize(width: 1, height: 1))
         }
 
@@ -141,13 +145,34 @@ struct MenuBarLabel: View {
         let barH: CGFloat = 5
         let pad: CGFloat = 4
 
-        let cpuLbl = NSAttributedString(string: "CPU ", attributes: [.font: lblFont, .foregroundColor: labelColor])
-        let ramLbl = NSAttributedString(string: "RAM ", attributes: [.font: lblFont, .foregroundColor: labelColor])
-
         let upStr = "↑" + SystemStats.formatSpeedAuto(stats.networkUpSpeed)
         let downStr = "↓" + SystemStats.formatSpeedAuto(stats.networkDownSpeed)
         let upAttr = NSAttributedString(string: upStr, attributes: [.font: spdFont, .foregroundColor: upNS])
         let downAttr = NSAttributedString(string: downStr, attributes: [.font: spdFont, .foregroundColor: downNS])
+
+        // バー項目を構築（CPU / RAM / GPU）→ 最大2行
+        struct BarItem {
+            let label: NSAttributedString
+            let fill: Double
+            let color: NSColor
+        }
+        var barItems: [BarItem] = []
+        if showCPU {
+            barItems.append(BarItem(
+                label: NSAttributedString(string: "CPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
+                fill: stats.cpuUsage / 100, color: cpuNS))
+        }
+        if showRAM {
+            barItems.append(BarItem(
+                label: NSAttributedString(string: "RAM ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
+                fill: stats.memoryPercent / 100, color: memNS))
+        }
+        if showGPU {
+            barItems.append(BarItem(
+                label: NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
+                fill: stats.gpuUsage / 100, color: gpuNS))
+        }
+        barItems = Array(barItems.prefix(2))
 
         // 行データ
         struct RowInfo {
@@ -158,31 +183,27 @@ struct MenuBarLabel: View {
         }
 
         var rows: [RowInfo] = []
+        let speeds: [NSAttributedString?] = showNet ? [upAttr, downAttr] : [nil, nil]
 
-        if showCPU && showRAM {
-            rows.append(RowInfo(label: cpuLbl, barFill: stats.cpuUsage / 100, barColor: cpuNS,
-                                speed: showNet ? upAttr : nil))
-            rows.append(RowInfo(label: ramLbl, barFill: stats.memoryPercent / 100, barColor: memNS,
-                                speed: showNet ? downAttr : nil))
-        } else if showCPU {
-            rows.append(RowInfo(label: cpuLbl, barFill: stats.cpuUsage / 100, barColor: cpuNS,
-                                speed: showNet ? upAttr : nil))
+        if barItems.count >= 2 {
+            rows.append(RowInfo(label: barItems[0].label, barFill: barItems[0].fill,
+                                barColor: barItems[0].color, speed: speeds[0]))
+            rows.append(RowInfo(label: barItems[1].label, barFill: barItems[1].fill,
+                                barColor: barItems[1].color, speed: speeds[1]))
+        } else if barItems.count == 1 {
+            rows.append(RowInfo(label: barItems[0].label, barFill: barItems[0].fill,
+                                barColor: barItems[0].color, speed: speeds[0]))
             if showNet {
-                rows.append(RowInfo(speed: downAttr))
+                rows.append(RowInfo(speed: speeds[1]))
             }
-        } else if showRAM {
-            rows.append(RowInfo(label: ramLbl, barFill: stats.memoryPercent / 100, barColor: memNS,
-                                speed: showNet ? upAttr : nil))
-            if showNet {
-                rows.append(RowInfo(speed: downAttr))
-            }
-        } else {
+        } else if showNet {
             rows.append(RowInfo(speed: upAttr))
             rows.append(RowInfo(speed: downAttr))
         }
 
         // サイズ計算
-        let rowH = max(cpuLbl.size().height, upAttr.size().height)
+        let sampleLbl = NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor])
+        let rowH = max(sampleLbl.size().height, upAttr.size().height)
         let rowGap: CGFloat = rows.count > 1 ? 1 : 0
         let totalH = rowH * CGFloat(rows.count) + rowGap * CGFloat(max(rows.count - 1, 0))
 
@@ -190,7 +211,9 @@ struct MenuBarLabel: View {
         let hasBar = rows.contains(where: { $0.barFill != nil })
         let hasSpeed = rows.contains(where: { $0.speed != nil })
 
-        let lblW: CGFloat = hasLabel ? max(cpuLbl.size().width, ramLbl.size().width) : 0
+        let lblW: CGFloat = hasLabel
+            ? rows.compactMap { $0.label?.size().width }.max() ?? 0
+            : 0
         let spdW: CGFloat = hasSpeed ? max(upAttr.size().width, downAttr.size().width) : 0
 
         var totalW: CGFloat = lblW

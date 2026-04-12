@@ -8,6 +8,7 @@ struct MonitorPopoverView: View {
 
     @AppStorage("cpuColor")         private var cpuColorName     = ThemeColor.blue.rawValue
     @AppStorage("memoryColor")      private var memoryColorName  = ThemeColor.green.rawValue
+    @AppStorage("gpuColor")         private var gpuColorName     = ThemeColor.yellow.rawValue
     @AppStorage("networkUpColor")   private var netUpColorName   = ThemeColor.orange.rawValue
     @AppStorage("networkDownColor") private var netDownColorName = ThemeColor.purple.rawValue
 
@@ -19,6 +20,7 @@ struct MonitorPopoverView: View {
     @AppStorage("compactShowCPU")     private var compactShowCPU     = true
     @AppStorage("compactShowRAM")     private var compactShowRAM     = true
     @AppStorage("compactShowNetwork") private var compactShowNetwork = true
+    @AppStorage("compactShowGPU")     private var compactShowGPU     = false
     @AppStorage("popoverWidth")       private var popoverWidth: Double = 360
 
     // MARK: - State
@@ -31,6 +33,7 @@ struct MonitorPopoverView: View {
 
     private var cpuColor:     Color { ThemeColor(rawValue: cpuColorName)?.color     ?? .blue }
     private var memColor:     Color { ThemeColor(rawValue: memoryColorName)?.color  ?? .green }
+    private var gpuColor:     Color { ThemeColor(rawValue: gpuColorName)?.color     ?? .yellow }
     private var netUpColor:   Color { ThemeColor(rawValue: netUpColorName)?.color   ?? .orange }
     private var netDownColor: Color { ThemeColor(rawValue: netDownColorName)?.color ?? .purple }
 
@@ -44,6 +47,7 @@ struct MonitorPopoverView: View {
                 header
                 cpuSection
                 memorySection
+                gpuSection
                 topProcessesSection
                 networkSection
 
@@ -109,6 +113,21 @@ struct MonitorPopoverView: View {
         )
     }
 
+    // MARK: - GPU
+
+    private var gpuSection: some View {
+        MetricCard(
+            icon: "bolt.fill",
+            title: "GPU",
+            value: String(format: "%.1f%%", stats.gpuUsage),
+            progress: stats.gpuUsage / 100.0,
+            color: gpuColor,
+            history: stats.gpuHistory,
+            maxValue: 100,
+            colorBinding: $gpuColorName
+        )
+    }
+
     // MARK: - Top Processes
 
     private var topProcessesSection: some View {
@@ -131,7 +150,7 @@ struct MonitorPopoverView: View {
                 title: "GPU トップ",
                 icon: "bolt.fill",
                 processes: stats.topGPUProcesses,
-                color: .yellow,
+                color: gpuColor,
                 valueLabel: { proc in
                     proc.memory > 0 ? SystemStats.formatBytes(proc.memory) : "Active"
                 }
@@ -343,9 +362,10 @@ struct MonitorPopoverView: View {
             }
 
             if menuBarSize == MenuBarSize.compact.rawValue {
-                HStack(spacing: 16) {
+                HStack(spacing: 12) {
                     Toggle("CPU", isOn: $compactShowCPU)
                     Toggle("RAM", isOn: $compactShowRAM)
+                    Toggle("GPU", isOn: $compactShowGPU)
                     Toggle("Net", isOn: $compactShowNetwork)
                 }
                 .font(.caption)

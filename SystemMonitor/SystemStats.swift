@@ -33,6 +33,11 @@ final class SystemStats {
     var uploadHistory: [Double] = Array(repeating: 0, count: 60)
     var downloadHistory: [Double] = Array(repeating: 0, count: 60)
 
+    // MARK: - GPU
+
+    var gpuUsage: Double = 0
+    var gpuHistory: [Double] = Array(repeating: 0, count: 60)
+
     // MARK: - Top Processes
 
     var topCPUProcesses: [ProcessUsage] = []
@@ -370,10 +375,26 @@ final class SystemStats {
 
         var service = IOIteratorNext(iterator)
         while service != 0 {
+            // GPU全体使用率を PerformanceStatistics から取得
+            var props: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+               let dict = props?.takeRetainedValue() as? [String: Any],
+               let perfStats = dict["PerformanceStatistics"] as? [String: Any] {
+                if let util = perfStats["Device Utilization %"] as? Int {
+                    gpuUsage = Double(util)
+                } else if let util = perfStats["GPU Activity(%)"] as? Int {
+                    gpuUsage = Double(util)
+                } else if let util = perfStats["gpuCoreUtilizationComponent"] as? Int {
+                    gpuUsage = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
+                }
+            }
+
             enumerateGPUClients(entry: service, depth: 0, into: &pidInfo)
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
         }
+
+        appendHistory(&gpuHistory, value: gpuUsage)
 
         let selfPID = ProcessInfo.processInfo.processIdentifier
 
