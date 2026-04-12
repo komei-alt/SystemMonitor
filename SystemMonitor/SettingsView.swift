@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 // MARK: - Speed Unit
 
@@ -19,8 +20,8 @@ enum MenuBarSize: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .compact: "Compact"
-        case .medium:  "Medium"
+        case .compact: "コンパクト"
+        case .medium:  "ミディアム"
         }
     }
 
@@ -86,49 +87,67 @@ struct SettingsView: View {
     @AppStorage("memoryColor")      private var memoryColor     = ThemeColor.green.rawValue
     @AppStorage("networkUpColor")   private var networkUpColor  = ThemeColor.orange.rawValue
     @AppStorage("networkDownColor") private var networkDownColor = ThemeColor.purple.rawValue
+    @AppStorage("compactShowCPU")     private var compactShowCPU     = true
+    @AppStorage("compactShowRAM")     private var compactShowRAM     = true
+    @AppStorage("compactShowNetwork") private var compactShowNetwork = true
 
     private let intervals: [(String, Double)] = [
-        ("1 sec", 1), ("2 sec", 2), ("3 sec", 3), ("5 sec", 5), ("10 sec", 10)
+        ("1秒", 1), ("2秒", 2), ("3秒", 3), ("5秒", 5), ("10秒", 10)
     ]
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("General") {
-                    Picker("Update Interval", selection: $updateInterval) {
+                Section("一般") {
+                    Picker("更新間隔", selection: $updateInterval) {
                         ForEach(intervals, id: \.1) { label, value in
                             Text(label).tag(value)
                         }
                     }
 
-                    Picker("Speed Unit", selection: $speedUnit) {
+                    Picker("速度の単位", selection: $speedUnit) {
                         ForEach(SpeedUnit.allCases) { unit in
                             Text(unit.rawValue).tag(unit.rawValue)
                         }
                     }
 
-                    Picker("Menu Bar Size", selection: $menuBarSize) {
+                    Picker("メニューバーサイズ", selection: $menuBarSize) {
                         ForEach(MenuBarSize.allCases) { size in
                             Text(size.displayName).tag(size.rawValue)
                         }
                     }
+
+                    LaunchAtLoginToggle()
                 }
 
-                Section("Colors") {
+                if menuBarSize == MenuBarSize.compact.rawValue {
+                    Section("コンパクト表示項目") {
+                        Toggle("CPU", isOn: $compactShowCPU)
+                        Toggle("RAM", isOn: $compactShowRAM)
+                        Toggle("ネットワーク", isOn: $compactShowNetwork)
+                    }
+                }
+
+                Section("カラー") {
                     colorPicker("CPU", selection: $cpuColor)
-                    colorPicker("Memory", selection: $memoryColor)
-                    colorPicker("Upload", selection: $networkUpColor)
-                    colorPicker("Download", selection: $networkDownColor)
+                    colorPicker("メモリ", selection: $memoryColor)
+                    colorPicker("アップロード", selection: $networkUpColor)
+                    colorPicker("ダウンロード", selection: $networkDownColor)
                 }
             }
             .formStyle(.grouped)
+            .scrollDisabled(true)
 
-            Text("\u{00A9}\u{FE0F} ROSCH, LLC")
+            Text("ROSCH SystemMonitor v1.0 \u{00A9} ROSCH, LLC")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.bottom, 16)
         }
-        .frame(width: 380, height: 400)
+        .frame(width: 380)
+        .fixedSize()
+        .onAppear {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func colorPicker(_ title: String, selection: Binding<String>) -> some View {
@@ -154,5 +173,28 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Launch at Login
+
+struct LaunchAtLoginToggle: View {
+    @State private var isEnabled = SMAppService.mainApp.status == .enabled
+
+    var body: some View {
+        Toggle("ログイン時に起動", isOn: $isEnabled)
+            .toggleStyle(.switch)
+            .tint(.green)
+            .onChange(of: isEnabled) { _, newValue in
+                do {
+                    if newValue {
+                        try SMAppService.mainApp.register()
+                    } else {
+                        try SMAppService.mainApp.unregister()
+                    }
+                } catch {
+                    isEnabled = SMAppService.mainApp.status == .enabled
+                }
+            }
     }
 }

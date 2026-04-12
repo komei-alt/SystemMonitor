@@ -38,8 +38,13 @@ struct MonitorPopoverView: View {
             Image(systemName: "gauge.with.dots.needle.50percent")
                 .font(.title2)
                 .foregroundStyle(.primary)
-            Text("System Monitor")
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("ROSCH SystemMonitor")
+                    .font(.headline)
+                Text("v1.0")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
         }
     }
@@ -63,7 +68,7 @@ struct MonitorPopoverView: View {
     private var memorySection: some View {
         MetricCard(
             icon: "memorychip",
-            title: "Memory",
+            title: "メモリ",
             value: "\(SystemStats.formatBytes(stats.memoryUsed)) / \(SystemStats.formatBytes(stats.memoryTotal))",
             progress: stats.memoryPercent / 100.0,
             color: memColor,
@@ -77,14 +82,14 @@ struct MonitorPopoverView: View {
     private var topProcessesSection: some View {
         HStack(alignment: .top, spacing: 12) {
             processList(
-                title: "CPU Top",
+                title: "CPU トップ",
                 icon: "flame.fill",
                 processes: stats.topCPUProcesses,
                 color: cpuColor,
                 valueLabel: { String(format: "%.1f%%", $0.cpu) }
             )
             processList(
-                title: "Memory Top",
+                title: "メモリ トップ",
                 icon: "memorychip.fill",
                 processes: stats.topMemoryProcesses,
                 color: memColor,
@@ -146,7 +151,7 @@ struct MonitorPopoverView: View {
             HStack {
                 Image(systemName: "network")
                     .foregroundStyle(netUpColor)
-                Text("Network")
+                Text("ネットワーク")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
             }
@@ -170,7 +175,7 @@ struct MonitorPopoverView: View {
                     Circle()
                         .fill(netUpColor)
                         .frame(width: 6, height: 6)
-                    Text("Upload")
+                    Text("アップロード")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -184,7 +189,7 @@ struct MonitorPopoverView: View {
                     Circle()
                         .fill(netDownColor)
                         .frame(width: 6, height: 6)
-                    Text("Download")
+                    Text("ダウンロード")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -212,18 +217,18 @@ struct MonitorPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text("Updates every \(Int(updateInterval))s")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Spacer()
             SettingsLink {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Settings")
-            
-            Button("Quit") {
+            .help("設定")
+
+            Text("\(Int(updateInterval))秒ごとに更新")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Spacer()
+            Button("終了") {
                 NSApplication.shared.terminate(nil)
             }
             .buttonStyle(.plain)

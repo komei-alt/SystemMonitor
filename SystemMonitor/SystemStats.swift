@@ -53,6 +53,7 @@ final class SystemStats {
 
     // MARK: - Private State
 
+    private let hostPort = mach_host_self()
     private var timer: Timer?
     private var previousCPUTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
     private var previousNetworkBytes: (sent: UInt64, received: UInt64)?
@@ -106,21 +107,27 @@ final class SystemStats {
     // MARK: - Monitoring
 
     func startMonitoring() {
+        timer?.invalidate()
         let stored = UserDefaults.standard.double(forKey: "updateInterval")
         currentInterval = stored > 0 ? stored : 2.0
-        update()
         timer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
             self?.update()
         }
         RunLoop.main.add(timer!, forMode: .common)
+        // 初回更新をメインスレッドの次のサイクルに遅延（UI構築をブロックしない）
+        DispatchQueue.main.async { [weak self] in
+            self?.update()
+        }
     }
 
     private func update() {
-        updateCPU()
-        updateMemory()
-        updateNetwork()
-        updateTopProcesses()
-        lastUpdateTime = Date()
+        autoreleasepool {
+            updateCPU()
+            updateMemory()
+            updateNetwork()
+            updateTopProcesses()
+            lastUpdateTime = Date()
+        }
     }
 
     // MARK: - CPU Monitoring
@@ -131,7 +138,7 @@ final class SystemStats {
         var numCPUInfo: mach_msg_type_number_t = 0
 
         let result = host_processor_info(
-            mach_host_self(),
+            hostPort,
             PROCESSOR_CPU_LOAD_INFO,
             &numCPUs,
             &cpuInfo,
@@ -194,7 +201,7 @@ final class SystemStats {
 
         let result = withUnsafeMutablePointer(to: &stats) { ptr in
             ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
+                host_statistics64(hostPort, HOST_VM_INFO64, intPtr, &count)
             }
         }
 
@@ -220,23 +227,20 @@ final class SystemStats {
 
         if let previous = previousNetworkBytes, let lastTime = lastUpdateTime {
             let elapsed = Date().timeIntervalSince(lastTime)
-            if elapsed > 0 {
-                let sentDelta: UInt64
-                if current.sent >= previous.sent {
-                    sentDelta = current.sent - previous.sent
-                } else {
-                    sentDelta = (UInt64(UInt32.max) &+ 1) &- previous.sent &+ current.sent
-                }
+            if elapsed > 0.1 {
+                // カウンター減少時はラップアラウンドとみなしスキップ
+                let sentDelta = current.sent >= previous.sent
+                    ? current.sent - previous.sent : 0
+                let receivedDelta = current.received >= previous.received
+                    ? current.received - previous.received : 0
 
-                let receivedDelta: UInt64
-                if current.received >= previous.received {
-                    receivedDelta = current.received - previous.received
-                } else {
-                    receivedDelta = (UInt64(UInt32.max) &+ 1) &- previous.received &+ current.received
-                }
+                let upSpeed   = UInt64(Double(sentDelta) / elapsed)
+                let downSpeed = UInt64(Double(receivedDelta) / elapsed)
 
-                networkUpSpeed   = UInt64(Double(sentDelta) / elapsed)
-                networkDownSpeed = UInt64(Double(receivedDelta) / elapsed)
+                // 10Gbps (1.25GB/s) を上限とし、異常値を除外
+                let maxSpeed: UInt64 = 1_250_000_000
+                networkUpSpeed   = min(upSpeed, maxSpeed)
+                networkDownSpeed = min(downSpeed, maxSpeed)
             }
         }
 
@@ -333,8 +337,11 @@ final class SystemStats {
 
         do {
             try proc.run()
+            // パイプバッファ満杯によるデッドロック防止のため、先にデータを読む
+            let fh = pipe.fileHandleForReading
+            let data = fh.readDataToEndOfFile()
+            try? fh.close()
             proc.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         } catch {
             return nil
@@ -350,25 +357,30 @@ final class SystemStats {
         }
     }
 
+    static func formatSpeedAuto(_ bytesPerSec: UInt64) -> String {
+        let b = Double(bytesPerSec)
+        if b < 1_000 {
+            return String(format: "%.0f B/s", b)
+        } else if b < 1_000_000 {
+            let kb = b / 1_000
+            return String(format: kb >= 10 ? "%.0f KB/s" : "%.1f KB/s", kb)
+        } else {
+            let mb = b / 1_000_000
+            return String(format: mb >= 10 ? "%.0f MB/s" : "%.1f MB/s", mb)
+        }
+    }
+
     static func formatSpeed(_ bytesPerSec: UInt64, unit: SpeedUnit = .megabytes) -> String {
+        let fig = "\u{2007}" // figure space（monospacedDigit で数字と同幅）
         switch unit {
         case .megabytes:
-            let kb = Double(bytesPerSec) / 1_024
-            let mb = kb / 1_024
-            let gb = mb / 1_024
-            if gb >= 1.0 { return String(format: "%.1fGB/s", gb) }
-            if mb >= 1.0 { return String(format: "%.1fMB/s", mb) }
-            if kb >= 1.0 { return String(format: "%.0fKB/s", kb) }
-            return String(format: "%lluB/s", bytesPerSec)
+            let mb = Double(bytesPerSec) / 1_000_000
+            return String(format: "%5.1f", mb)
+                .replacingOccurrences(of: " ", with: fig) + "MB"
         case .megabits:
-            let bps  = Double(bytesPerSec) * 8
-            let kbps = bps / 1_000
-            let mbps = kbps / 1_000
-            let gbps = mbps / 1_000
-            if gbps >= 1.0 { return String(format: "%.1fGb/s", gbps) }
-            if mbps >= 1.0 { return String(format: "%.1fMb/s", mbps) }
-            if kbps >= 1.0 { return String(format: "%.0fKb/s", kbps) }
-            return String(format: "%.0fb/s", bps)
+            let mbps = Double(bytesPerSec) * 8 / 1_000_000
+            return String(format: "%6.1f", mbps)
+                .replacingOccurrences(of: " ", with: fig) + "Mb"
         }
     }
 
