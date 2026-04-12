@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 
 struct MonitorPopoverView: View {
     var stats: SystemStats
