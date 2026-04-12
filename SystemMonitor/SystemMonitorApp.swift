@@ -12,10 +12,6 @@ struct SystemMonitorApp: App {
             MenuBarLabel(stats: stats)
         }
         .menuBarExtraStyle(.window)
-
-        Settings {
-            SettingsView()
-        }
     }
 }
 

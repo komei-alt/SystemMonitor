@@ -4,31 +4,61 @@ import Charts
 struct MonitorPopoverView: View {
     var stats: SystemStats
 
+    // MARK: - Color Settings
+
     @AppStorage("cpuColor")         private var cpuColorName     = ThemeColor.blue.rawValue
     @AppStorage("memoryColor")      private var memoryColorName  = ThemeColor.green.rawValue
     @AppStorage("networkUpColor")   private var netUpColorName   = ThemeColor.orange.rawValue
     @AppStorage("networkDownColor") private var netDownColorName = ThemeColor.purple.rawValue
-    @AppStorage("updateInterval")   private var updateInterval: Double = 2.0
+
+    // MARK: - General Settings
+
+    @AppStorage("updateInterval")     private var updateInterval: Double = 2.0
+    @AppStorage("speedUnit")          private var speedUnit       = SpeedUnit.megabytes.rawValue
+    @AppStorage("menuBarSize")        private var menuBarSize     = MenuBarSize.compact.rawValue
+    @AppStorage("compactShowCPU")     private var compactShowCPU     = true
+    @AppStorage("compactShowRAM")     private var compactShowRAM     = true
+    @AppStorage("compactShowNetwork") private var compactShowNetwork = true
+    @AppStorage("popoverWidth")       private var popoverWidth: Double = 360
+
+    // MARK: - State
+
+    @State private var hoveredProcessID: UUID?
+    @State private var showSettings = false
+    @State private var showNetworkColorPicker = false
+
+    // MARK: - Computed Colors
 
     private var cpuColor:     Color { ThemeColor(rawValue: cpuColorName)?.color     ?? .blue }
     private var memColor:     Color { ThemeColor(rawValue: memoryColorName)?.color  ?? .green }
     private var netUpColor:   Color { ThemeColor(rawValue: netUpColorName)?.color   ?? .orange }
     private var netDownColor: Color { ThemeColor(rawValue: netDownColorName)?.color ?? .purple }
 
+    private let intervals: [(String, Double)] = [
+        ("1秒", 1), ("2秒", 2), ("3秒", 3), ("5秒", 5), ("10秒", 10)
+    ]
+
     var body: some View {
-        VStack(spacing: 16) {
-            header
-            cpuSection
-            memorySection
-            topProcessesSection
-            networkSection
+        ZStack(alignment: .trailing) {
+            VStack(spacing: 16) {
+                header
+                cpuSection
+                memorySection
+                topProcessesSection
+                networkSection
 
-            Divider()
+                if showSettings {
+                    settingsPanel
+                }
 
-            footer
+                Divider()
+                footer
+            }
+            .padding(20)
+            .frame(width: popoverWidth)
+
+            PopoverResizeHandle(width: $popoverWidth)
         }
-        .padding(20)
-        .frame(width: 360)
     }
 
     // MARK: - Header
@@ -59,7 +89,8 @@ struct MonitorPopoverView: View {
             progress: stats.cpuUsage / 100.0,
             color: cpuColor,
             history: stats.cpuHistory,
-            maxValue: 100
+            maxValue: 100,
+            colorBinding: $cpuColorName
         )
     }
 
@@ -73,7 +104,8 @@ struct MonitorPopoverView: View {
             progress: stats.memoryPercent / 100.0,
             color: memColor,
             history: stats.memoryHistory,
-            maxValue: 100
+            maxValue: 100,
+            colorBinding: $memoryColorName
         )
     }
 
@@ -139,7 +171,23 @@ struct MonitorPopoverView: View {
                             .font(.system(size: 10))
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .help(proc.name)
+                            .onHover { isHovered in
+                                hoveredProcessID = isHovered ? proc.id : nil
+                            }
+                            .overlay(alignment: .top) {
+                                if hoveredProcessID == proc.id {
+                                    Text(proc.name)
+                                        .font(.caption2)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                                        .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+                                        .fixedSize()
+                                        .offset(y: -24)
+                                        .allowsHitTesting(false)
+                                        .zIndex(100)
+                                }
+                            }
                         Spacer(minLength: 2)
                         Text(valueLabel(proc))
                             .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -161,9 +209,34 @@ struct MonitorPopoverView: View {
             HStack {
                 Image(systemName: "network")
                     .foregroundStyle(netUpColor)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showNetworkColorPicker.toggle()
+                        }
+                    }
                 Text("ネットワーク")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
+            }
+
+            if showNetworkColorPicker {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text("↑")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(netUpColor)
+                            .frame(width: 12)
+                        InlineColorPicker(selection: $netUpColorName)
+                    }
+                    HStack(spacing: 6) {
+                        Text("↓")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(netDownColor)
+                            .frame(width: 12)
+                        InlineColorPicker(selection: $netDownColorName)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             HStack(spacing: 0) {
@@ -223,27 +296,153 @@ struct MonitorPopoverView: View {
         }
     }
 
+    // MARK: - Settings Panel
+
+    private var settingsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("更新間隔")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Picker("", selection: $updateInterval) {
+                    ForEach(intervals, id: \.1) { label, value in
+                        Text(label).tag(value)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 240)
+            }
+
+            HStack {
+                Text("速度の単位")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Picker("", selection: $speedUnit) {
+                    ForEach(SpeedUnit.allCases) { unit in
+                        Text(unit.rawValue).tag(unit.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 120)
+            }
+
+            HStack {
+                Text("メニューバー")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Picker("", selection: $menuBarSize) {
+                    ForEach(MenuBarSize.allCases) { size in
+                        Text(size.displayName).tag(size.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 180)
+            }
+
+            if menuBarSize == MenuBarSize.compact.rawValue {
+                HStack(spacing: 16) {
+                    Toggle("CPU", isOn: $compactShowCPU)
+                    Toggle("RAM", isOn: $compactShowRAM)
+                    Toggle("Net", isOn: $compactShowNetwork)
+                }
+                .font(.caption)
+                .toggleStyle(.checkbox)
+            }
+
+            LaunchAtLoginToggle()
+                .font(.caption)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
         HStack {
-            SettingsLink {
-                Image(systemName: "gearshape")
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showSettings.toggle()
+                }
+            } label: {
+                Image(systemName: showSettings ? "gearshape.fill" : "gearshape")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("設定")
+            .foregroundStyle(showSettings ? .primary : .secondary)
 
             Text("\(Int(updateInterval))秒ごとに更新")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
+
+            Text("v1.0")
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+
             Button("終了") {
                 NSApplication.shared.terminate(nil)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
         }
+    }
+}
+
+// MARK: - Inline Color Picker
+
+struct InlineColorPicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(ThemeColor.allCases) { theme in
+                Circle()
+                    .fill(theme.color.gradient)
+                    .frame(width: 16, height: 16)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(.white.opacity(0.9), lineWidth: 2)
+                            .opacity(selection == theme.rawValue ? 1 : 0)
+                    )
+                    .shadow(color: selection == theme.rawValue ? theme.color.opacity(0.5) : .clear, radius: 3)
+                    .scaleEffect(selection == theme.rawValue ? 1.15 : 1.0)
+                    .animation(.easeInOut(duration: 0.15), value: selection)
+                    .onTapGesture { selection = theme.rawValue }
+            }
+        }
+    }
+}
+
+// MARK: - Popover Resize Handle
+
+struct PopoverResizeHandle: View {
+    @Binding var width: Double
+    @State private var dragStartWidth: Double = 0
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 6)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if dragStartWidth == 0 { dragStartWidth = width }
+                        width = min(max(dragStartWidth + value.translation.width, 320), 600)
+                    }
+                    .onEnded { _ in dragStartWidth = 0 }
+            )
     }
 }
 
@@ -257,12 +456,22 @@ struct MetricCard: View {
     let color: Color
     let history: [Double]
     var maxValue: Double? = nil
+    var colorBinding: Binding<String>? = nil
+
+    @State private var showingColorPicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: icon)
                     .foregroundStyle(color)
+                    .onTapGesture {
+                        if colorBinding != nil {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showingColorPicker.toggle()
+                            }
+                        }
+                    }
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
@@ -270,6 +479,11 @@ struct MetricCard: View {
                     .font(.system(.body, design: .rounded).weight(.medium))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+            }
+
+            if showingColorPicker, let binding = colorBinding {
+                InlineColorPicker(selection: binding)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             GaugeBar(value: progress, color: color)
