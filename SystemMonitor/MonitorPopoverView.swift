@@ -17,10 +17,10 @@ struct MonitorPopoverView: View {
     @AppStorage("updateInterval")     private var updateInterval: Double = 2.0
     @AppStorage("speedUnit")          private var speedUnit       = SpeedUnit.megabytes.rawValue
     @AppStorage("menuBarSize")        private var menuBarSize     = MenuBarSize.compact.rawValue
-    @AppStorage("compactShowCPU")     private var compactShowCPU     = true
-    @AppStorage("compactShowRAM")     private var compactShowRAM     = true
-    @AppStorage("compactShowNetwork") private var compactShowNetwork = true
-    @AppStorage("compactShowGPU")     private var compactShowGPU     = false
+    @AppStorage("showCPU")     private var showCPU     = true
+    @AppStorage("showRAM")     private var showRAM     = true
+    @AppStorage("showNetwork") private var showNetwork = true
+    @AppStorage("showGPU")     private var showGPU     = false
     @AppStorage("popoverWidth")       private var popoverWidth: Double = 360
 
     // MARK: - State
@@ -361,16 +361,14 @@ struct MonitorPopoverView: View {
                 .frame(maxWidth: 180)
             }
 
-            if menuBarSize == MenuBarSize.compact.rawValue {
-                HStack(spacing: 12) {
-                    Toggle("CPU", isOn: $compactShowCPU)
-                    Toggle("RAM", isOn: $compactShowRAM)
-                    Toggle("GPU", isOn: $compactShowGPU)
-                    Toggle("Net", isOn: $compactShowNetwork)
-                }
-                .font(.caption)
-                .toggleStyle(.checkbox)
+            HStack(spacing: 12) {
+                Toggle("CPU", isOn: $showCPU)
+                Toggle("RAM", isOn: $showRAM)
+                Toggle("GPU", isOn: $showGPU)
+                Toggle("Net", isOn: $showNetwork)
             }
+            .font(.caption)
+            .toggleStyle(.checkbox)
 
             LaunchAtLoginToggle()
                 .font(.caption)

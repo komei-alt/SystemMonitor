@@ -74,10 +74,10 @@ struct MenuBarLabel: View {
     @AppStorage("networkUpColor")   private var netUpColorName   = ThemeColor.orange.rawValue
     @AppStorage("networkDownColor") private var netDownColorName = ThemeColor.purple.rawValue
     @AppStorage("menuBarSize")      private var menuBarSizeRaw   = MenuBarSize.compact.rawValue
-    @AppStorage("compactShowCPU")     private var compactShowCPU     = true
-    @AppStorage("compactShowRAM")     private var compactShowRAM     = true
-    @AppStorage("compactShowGPU")     private var compactShowGPU     = false
-    @AppStorage("compactShowNetwork") private var compactShowNetwork = true
+    @AppStorage("showCPU")     private var showCPU     = true
+    @AppStorage("showRAM")     private var showRAM     = true
+    @AppStorage("showGPU")     private var showGPU     = false
+    @AppStorage("showNetwork") private var showNetwork = true
 
     var body: some View {
         Image(nsImage: renderImage())
@@ -103,36 +103,44 @@ struct MenuBarLabel: View {
         let fig = "\u{2007}"
         let cpuVal  = String(format: "%2.0f%%", stats.cpuUsage).replacingOccurrences(of: " ", with: fig)
         let memVal  = String(format: "%2.0f%%", stats.memoryPercent).replacingOccurrences(of: " ", with: fig)
+        let gpuVal  = String(format: "%2.0f%%", stats.gpuUsage).replacingOccurrences(of: " ", with: fig)
         let upVal   = SystemStats.formatSpeed(stats.networkUpSpeed, unit: stats.speedUnit)
         let downVal = SystemStats.formatSpeed(stats.networkDownSpeed, unit: stats.speedUnit)
 
+        // 共通トグル
+        let itemCPU = showCPU
+        let itemRAM = showRAM
+        let itemGPU = showGPU
+        let itemNet = showNetwork
+
         if !isCompact {
+            if !itemCPU && !itemRAM && !itemGPU && !itemNet {
+                return NSImage(size: NSSize(width: 1, height: 1))
+            }
             let labelFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
             let labelColor = NSColor.secondaryLabelColor
             let str = NSMutableAttributedString()
+            var needsSpace = false
             func lbl(_ t: String) {
                 str.append(NSAttributedString(string: t, attributes: [.font: labelFont, .foregroundColor: labelColor]))
             }
             func val(_ t: String, _ c: NSColor) {
                 str.append(NSAttributedString(string: t, attributes: [.font: valueFont, .foregroundColor: c]))
             }
-            lbl("CPU "); val(cpuVal, cpuNS)
-            lbl(" MEM "); val(memVal, memNS)
-            lbl(" ↑"); val(upVal, upNS)
-            lbl(" ↓"); val(downVal, downNS)
+            if itemCPU { if needsSpace { lbl(" ") }; lbl("CPU "); val(cpuVal, cpuNS); needsSpace = true }
+            if itemRAM { if needsSpace { lbl(" ") }; lbl("MEM "); val(memVal, memNS); needsSpace = true }
+            if itemGPU { if needsSpace { lbl(" ") }; lbl("GPU "); val(gpuVal, gpuNS); needsSpace = true }
+            if itemNet { lbl(" ↑"); val(upVal, upNS); lbl(" ↓"); val(downVal, downNS) }
 
             let size = str.size()
             let imgSize = NSSize(width: ceil(size.width), height: ceil(size.height))
             return rasterize(size: imgSize) { str.draw(at: .zero) }
         }
 
-        // コンパクト: 2段レイアウト（選択項目 + ネットワーク速度）
-        let showCPU = compactShowCPU
-        let showRAM = compactShowRAM
-        let showGPU = compactShowGPU
-        let showNet = compactShowNetwork
+        // コンパクト: 多段レイアウト（選択項目 + ネットワーク速度）
+        let showNet = itemNet
 
-        if !showCPU && !showRAM && !showGPU && !showNet {
+        if !itemCPU && !itemRAM && !itemGPU && !showNet {
             return NSImage(size: NSSize(width: 1, height: 1))
         }
 
@@ -144,7 +152,7 @@ struct MenuBarLabel: View {
         }
 
         // 表示ON の項目をカウントしてフォント決定
-        let barCount = [showCPU, showRAM, showGPU].filter { $0 }.count
+        let barCount = [itemCPU, itemRAM, itemGPU].filter { $0 }.count
         let maxRows = min(barCount, 3)
         let smallSize: CGFloat = maxRows >= 3 ? 7 : 9
         let lblFont = NSFont.systemFont(ofSize: smallSize, weight: .semibold)
@@ -162,17 +170,17 @@ struct MenuBarLabel: View {
 
         // バー項目を構築（CPU / RAM / GPU）→ 最大3行
         var barItems: [BarItem] = []
-        if showCPU {
+        if itemCPU {
             barItems.append(BarItem(
                 label: NSAttributedString(string: "CPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
                 fill: stats.cpuUsage / 100, color: cpuNS))
         }
-        if showRAM {
+        if itemRAM {
             barItems.append(BarItem(
                 label: NSAttributedString(string: "RAM ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
                 fill: stats.memoryPercent / 100, color: memNS))
         }
-        if showGPU {
+        if itemGPU {
             barItems.append(BarItem(
                 label: NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
                 fill: stats.gpuUsage / 100, color: gpuNS))
