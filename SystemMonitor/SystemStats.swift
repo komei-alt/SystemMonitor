@@ -133,6 +133,7 @@ final class SystemStats {
             updateMemory()
             updateNetwork()
             updateTopProcesses()
+            updateGPUUsage()
             updateTopGPUProcesses()
             lastUpdateTime = Date()
         }
@@ -356,12 +357,41 @@ final class SystemStats {
         }
     }
 
-    // MARK: - GPU Client Monitoring
+    // MARK: - GPU Monitoring
 
+    /// GPU使用率を IOAccelerator の PerformanceStatistics から取得（軽量）
+    private func updateGPUUsage() {
+        guard let matching = IOServiceMatching("IOAccelerator") else { return }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            // PerformanceStatistics のみ個別取得（全プロパティコピーを回避）
+            if let perfRef = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0) {
+                let perfStats = perfRef.takeRetainedValue()
+                if let dict = perfStats as? [String: Any] {
+                    if let util = dict["Device Utilization %"] as? Int {
+                        gpuUsage = Double(util)
+                    } else if let util = dict["GPU Activity(%)"] as? Int {
+                        gpuUsage = Double(util)
+                    } else if let util = dict["gpuCoreUtilizationComponent"] as? Int {
+                        gpuUsage = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
+                    }
+                }
+            }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        appendHistory(&gpuHistory, value: gpuUsage)
+    }
+
+    /// GPUクライアント（プロセス）を IOGPUDevice の直接子から取得（depth 1のみ）
     private func updateTopGPUProcesses() {
-        var pidInfo: [pid_t: (name: String, resourceBytes: UInt64, clientCount: Int)] = [:]
+        var pidInfo: [pid_t: (name: String, clientCount: Int)] = [:]
 
-        guard let matching = IOServiceMatching("IOAccelerator") else {
+        guard let matching = IOServiceMatching("IOGPUDevice") else {
             topGPUProcesses = []
             return
         }
@@ -373,77 +403,41 @@ final class SystemStats {
         }
         defer { IOObjectRelease(iterator) }
 
-        var service = IOIteratorNext(iterator)
-        while service != 0 {
-            // GPU全体使用率を PerformanceStatistics から取得
-            var props: Unmanaged<CFMutableDictionary>?
-            if IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-               let dict = props?.takeRetainedValue() as? [String: Any],
-               let perfStats = dict["PerformanceStatistics"] as? [String: Any] {
-                if let util = perfStats["Device Utilization %"] as? Int {
-                    gpuUsage = Double(util)
-                } else if let util = perfStats["GPU Activity(%)"] as? Int {
-                    gpuUsage = Double(util)
-                } else if let util = perfStats["gpuCoreUtilizationComponent"] as? Int {
-                    gpuUsage = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
+        var device = IOIteratorNext(iterator)
+        while device != 0 {
+            // 直接子のみ（再帰なし）
+            var childIter: io_iterator_t = 0
+            if IORegistryEntryGetChildIterator(device, kIOServicePlane, &childIter) == KERN_SUCCESS {
+                var child = IOIteratorNext(childIter)
+                while child != 0 {
+                    if let ref = IORegistryEntryCreateCFProperty(child, "IOUserClientCreator" as CFString, kCFAllocatorDefault, 0) {
+                        let creator = ref.takeRetainedValue() as! String
+                        let comps = creator.split(separator: ",", maxSplits: 1)
+                        if comps.count >= 2,
+                           let pidStr = comps[0].split(separator: " ").last,
+                           let pid = pid_t(pidStr) {
+                            let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
+                            var info = pidInfo[pid] ?? (name: name, clientCount: 0)
+                            info.clientCount += 1
+                            pidInfo[pid] = info
+                        }
+                    }
+                    IOObjectRelease(child)
+                    child = IOIteratorNext(childIter)
                 }
+                IOObjectRelease(childIter)
             }
-
-            enumerateGPUClients(entry: service, depth: 0, into: &pidInfo)
-            IOObjectRelease(service)
-            service = IOIteratorNext(iterator)
+            IOObjectRelease(device)
+            device = IOIteratorNext(iterator)
         }
-
-        appendHistory(&gpuHistory, value: gpuUsage)
 
         let selfPID = ProcessInfo.processInfo.processIdentifier
 
         topGPUProcesses = pidInfo
             .filter { $0.key > 0 && $0.key != selfPID }
-            .sorted {
-                if $0.value.resourceBytes != $1.value.resourceBytes {
-                    return $0.value.resourceBytes > $1.value.resourceBytes
-                }
-                return $0.value.clientCount > $1.value.clientCount
-            }
+            .sorted { $0.value.clientCount > $1.value.clientCount }
             .prefix(3)
-            .map { ProcessUsage(name: $0.value.name, cpu: 0, memory: $0.value.resourceBytes) }
-    }
-
-    private func enumerateGPUClients(
-        entry: io_object_t, depth: Int,
-        into pidInfo: inout [pid_t: (name: String, resourceBytes: UInt64, clientCount: Int)]
-    ) {
-        guard depth < 4 else { return }
-
-        var props: Unmanaged<CFMutableDictionary>?
-        if IORegistryEntryCreateCFProperties(entry, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-           let dict = props?.takeRetainedValue() as? [String: Any],
-           let creator = dict["IOUserClientCreator"] as? String {
-            let comps = creator.split(separator: ",", maxSplits: 1)
-            if comps.count >= 2,
-               let pidStr = comps[0].split(separator: " ").last,
-               let pid = pid_t(pidStr) {
-                let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
-                var info = pidInfo[pid] ?? (name: name, resourceBytes: 0, clientCount: 0)
-                info.clientCount += 1
-                if let size = dict["IOGPUAllocSize"] as? UInt64 {
-                    info.resourceBytes += size
-                }
-                pidInfo[pid] = info
-            }
-        }
-
-        var childIter: io_iterator_t = 0
-        guard IORegistryEntryGetChildIterator(entry, kIOServicePlane, &childIter) == KERN_SUCCESS else { return }
-        defer { IOObjectRelease(childIter) }
-
-        var child = IOIteratorNext(childIter)
-        while child != 0 {
-            enumerateGPUClients(entry: child, depth: depth + 1, into: &pidInfo)
-            IOObjectRelease(child)
-            child = IOIteratorNext(childIter)
-        }
+            .map { ProcessUsage(name: $0.value.name, cpu: 0, memory: 0) }
     }
 
     // MARK: - Helpers
