@@ -1,47 +1,75 @@
 import SwiftUI
 
-/// 軽量なミニグラフ（Canvas ベース — SwiftUI Charts の Metal オーバーヘッドを回避）
+/// Shape ベースの軽量グラフ（Metal テクスチャ不要）
 struct MiniGraphView: View {
     let data: [Double]
     let color: Color
     var maxValue: Double? = nil
 
     var body: some View {
-        Canvas { context, size in
+        ZStack {
+            GraphAreaShape(data: data, maxValue: resolvedMax)
+                .fill(.linearGradient(
+                    colors: [color.opacity(0.25), color.opacity(0.03)],
+                    startPoint: .top, endPoint: .bottom))
+            GraphLineShape(data: data, maxValue: resolvedMax)
+                .stroke(color, lineWidth: 1.5)
+        }
+    }
+
+    private var resolvedMax: Double {
+        maxValue ?? max(data.max() ?? 0, 0.001)
+    }
+}
+
+// MARK: - Line Shape
+
+private struct GraphLineShape: Shape {
+    let data: [Double]
+    let maxValue: Double
+
+    func path(in rect: CGRect) -> Path {
+        Path { p in
             let count = data.count
             guard count > 1 else { return }
-
-            let yMax = maxValue ?? max(data.max() ?? 0, 0.001)
-            let stepX = size.width / CGFloat(count - 1)
-
-            // データ → 座標変換
-            func point(_ i: Int) -> CGPoint {
-                let x = stepX * CGFloat(i)
-                let y = size.height - (size.height * CGFloat(data[i] / yMax))
-                return CGPoint(x: x, y: min(max(y, 0), size.height))
-            }
-
-            // ライン Path
-            var linePath = Path()
-            linePath.move(to: point(0))
+            let stepX = rect.width / CGFloat(count - 1)
+            p.move(to: pt(0, rect, stepX))
             for i in 1..<count {
-                linePath.addLine(to: point(i))
+                p.addLine(to: pt(i, rect, stepX))
+            }
+        }
+    }
+
+    private func pt(_ i: Int, _ r: CGRect, _ stepX: CGFloat) -> CGPoint {
+        let y = r.height - r.height * CGFloat(data[i] / maxValue)
+        return CGPoint(x: stepX * CGFloat(i), y: min(max(y, 0), r.height))
+    }
+}
+
+// MARK: - Area Shape
+
+private struct GraphAreaShape: Shape {
+    let data: [Double]
+    let maxValue: Double
+
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            let count = data.count
+            guard count > 1 else { return }
+            let stepX = rect.width / CGFloat(count - 1)
+
+            func pt(_ i: Int) -> CGPoint {
+                let y = rect.height - rect.height * CGFloat(data[i] / maxValue)
+                return CGPoint(x: stepX * CGFloat(i), y: min(max(y, 0), rect.height))
             }
 
-            // エリア Path（ラインの下を塗りつぶし）
-            var areaPath = linePath
-            areaPath.addLine(to: CGPoint(x: stepX * CGFloat(count - 1), y: size.height))
-            areaPath.addLine(to: CGPoint(x: 0, y: size.height))
-            areaPath.closeSubpath()
-
-            // グラデーション塗りつぶし
-            let gradient = Gradient(colors: [color.opacity(0.25), color.opacity(0.03)])
-            context.fill(areaPath, with: .linearGradient(gradient,
-                startPoint: CGPoint(x: 0, y: 0),
-                endPoint: CGPoint(x: 0, y: size.height)))
-
-            // ライン描画
-            context.stroke(linePath, with: .color(color), lineWidth: 1.5)
+            p.move(to: pt(0))
+            for i in 1..<count {
+                p.addLine(to: pt(i))
+            }
+            p.addLine(to: CGPoint(x: stepX * CGFloat(count - 1), y: rect.height))
+            p.addLine(to: CGPoint(x: 0, y: rect.height))
+            p.closeSubpath()
         }
     }
 }
