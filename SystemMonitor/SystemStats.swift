@@ -388,13 +388,10 @@ final class SystemStats {
         while service != 0 {
             if let perfRef = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0) {
                 let cfDict = perfRef.takeRetainedValue() as! CFDictionary
-                // CFDictionary から個別キーを直接取得（Swift Dict 変換を回避）
                 func readInt(_ key: String) -> Int? {
-                    var value: UnsafeRawPointer?
                     let cfKey = key as CFString
-                    guard CFDictionaryGetValueIfPresent(cfDict, Unmanaged.passUnretained(cfKey).toOpaque(), &value),
-                          let raw = value else { return nil }
-                    return (raw.load(as: Unmanaged<NSNumber>.self).takeUnretainedValue()).intValue
+                    guard let raw = CFDictionaryGetValue(cfDict, Unmanaged.passUnretained(cfKey).toOpaque()) else { return nil }
+                    return (Unmanaged<NSNumber>.fromOpaque(raw).takeUnretainedValue()).intValue
                 }
                 if let util = readInt("Device Utilization %") {
                     gpuUsage = Double(util)

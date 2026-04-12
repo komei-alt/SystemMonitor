@@ -92,7 +92,12 @@ struct MenuBarLabel: View {
     @AppStorage("showNetwork") private var showNetwork = true
 
     var body: some View {
-        Text("SysMon")  // DEBUG: 最小テスト
+        Image(nsImage: renderImage())
+            .onChange(of: cpuColorName)     { _, _ in SymbolCache.invalidate() }
+            .onChange(of: memoryColorName)  { _, _ in SymbolCache.invalidate() }
+            .onChange(of: netUpColorName)   { _, _ in SymbolCache.invalidate() }
+            .onChange(of: netDownColorName) { _, _ in SymbolCache.invalidate() }
+            .onChange(of: menuBarSizeRaw)   { _, _ in SymbolCache.invalidate() }
     }
 
     private func renderImage() -> NSImage {
