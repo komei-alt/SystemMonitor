@@ -25,7 +25,7 @@ struct MonitorPopoverView: View {
 
     // MARK: - State
 
-    @State private var hoveredProcessID: UUID?
+    @State private var hoveredProcessID: String?
     @State private var showSettings = false
     @State private var showNetworkColorPicker = false
 
@@ -186,27 +186,7 @@ struct MonitorPopoverView: View {
                             .foregroundStyle(.white)
                             .frame(width: 14, height: 14)
                             .background(color.opacity(i == 0 ? 1.0 : i == 1 ? 0.6 : 0.35), in: Circle())
-                        Text(proc.name)
-                            .font(.system(size: 10))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .onHover { isHovered in
-                                hoveredProcessID = isHovered ? proc.id : nil
-                            }
-                            .overlay(alignment: .top) {
-                                if hoveredProcessID == proc.id {
-                                    Text(proc.name)
-                                        .font(.caption2)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                                        .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
-                                        .fixedSize()
-                                        .offset(y: -24)
-                                        .allowsHitTesting(false)
-                                        .zIndex(100)
-                                }
-                            }
+                        processNameView(proc: proc, color: color)
                         Spacer(minLength: 2)
                         Text(valueLabel(proc))
                             .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -219,6 +199,37 @@ struct MonitorPopoverView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// プロセス名 + ホバーツールチップ（型チェック分割用）
+    @ViewBuilder
+    private func processNameView(proc: ProcessUsage, color: Color) -> some View {
+        let isHovered = hoveredProcessID == proc.id
+        Text(proc.name)
+            .font(.system(size: 10))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .onHover { inside in
+                hoveredProcessID = inside ? proc.id : nil
+            }
+            .overlay(alignment: .top) {
+                if isHovered {
+                    tooltipLabel(proc.name)
+                }
+            }
+    }
+
+    private func tooltipLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            .fixedSize()
+            .offset(y: -24)
+            .allowsHitTesting(false)
+            .zIndex(100)
     }
 
     // MARK: - Network

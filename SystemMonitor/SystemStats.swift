@@ -5,10 +5,17 @@ import Observation
 // MARK: - プロセス使用量モデル
 
 struct ProcessUsage: Identifiable {
-    let id = UUID()
+    let id: String       // プロセス名ベースの安定ID（SwiftUI差分更新の効率化）
     let name: String
     let cpu: Double      // CPU使用率 (%)
     let memory: UInt64   // メモリ使用量 (bytes)
+
+    init(name: String, cpu: Double, memory: UInt64) {
+        self.id = name
+        self.name = name
+        self.cpu = cpu
+        self.memory = memory
+    }
 }
 
 @Observable
@@ -292,53 +299,29 @@ final class SystemStats {
     // MARK: - Top Processes Monitoring
 
     private func updateTopProcesses() {
-        // ps で全プロセスの CPU% / RSS(KB) / コマンド名を取得
-        guard let output = runPS() else { return }
-
-        struct RawProc {
-            let name: String
-            let cpu: Double
-            let memKB: UInt64
+        // CPU Top 3 と Memory Top 3 を別々のソート済みコマンドで取得（全プロセス展開を回避）
+        topCPUProcesses = runSortedPS(sortFlag: "-pcpu", limit: 3).map {
+            ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024)
         }
-
-        var procs: [RawProc] = []
-
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-
-            // "  3.2  123456 /path/to/Executable" 形式をパース
-            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-            guard parts.count >= 3,
-                  let cpu = Double(parts[0]),
-                  let rss = UInt64(parts[1]) else { continue }
-
-            // パスから実行ファイル名だけ抽出
-            let rawName = String(parts[2])
-            let displayName = URL(fileURLWithPath: rawName).lastPathComponent
-
-            procs.append(RawProc(name: displayName, cpu: cpu, memKB: rss))
+        topMemoryProcesses = runSortedPS(sortFlag: "-rss", limit: 3).map {
+            ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024)
         }
-
-        // CPU使用率 Top 3（0%は除外）
-        topCPUProcesses = procs
-            .filter { $0.cpu > 0 }
-            .sorted { $0.cpu > $1.cpu }
-            .prefix(3)
-            .map { ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024) }
-
-        // メモリ使用量 Top 3
-        topMemoryProcesses = procs
-            .sorted { $0.memKB > $1.memKB }
-            .prefix(3)
-            .map { ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024) }
     }
 
-    /// ps コマンドを実行して stdout を返す
-    private func runPS() -> String? {
+    private struct RawProc {
+        let name: String
+        let cpu: Double
+        let memKB: UInt64
+    }
+
+    /// ps でソート済み上位N件を取得（shell pipe で出力を限定）
+    private func runSortedPS(sortFlag: String, limit: Int) -> [RawProc] {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        proc.arguments = ["-Ao", "pcpu=,rss=,comm="]
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", "ps -Aro pcpu=,rss=,comm= | head -n \(limit)"]
+        if sortFlag == "-rss" {
+            proc.arguments = ["-c", "ps -Amo pcpu=,rss=,comm= | head -n \(limit)"]
+        }
 
         let pipe = Pipe()
         proc.standardOutput = pipe
@@ -346,14 +329,23 @@ final class SystemStats {
 
         do {
             try proc.run()
-            // パイプバッファ満杯によるデッドロック防止のため、先にデータを読む
-            let fh = pipe.fileHandleForReading
-            let data = fh.readDataToEndOfFile()
-            try? fh.close()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
-            return String(data: data, encoding: .utf8)
+            guard let output = String(data: data, encoding: .utf8) else { return [] }
+
+            var results: [RawProc] = []
+            for line in output.split(separator: "\n") {
+                let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+                guard parts.count >= 3,
+                      let cpu = Double(parts[0]),
+                      let rss = UInt64(parts[1]) else { continue }
+                let name = URL(fileURLWithPath: String(parts[2])).lastPathComponent
+                if sortFlag == "-pcpu" && cpu <= 0 { continue }
+                results.append(RawProc(name: name, cpu: cpu, memKB: rss))
+            }
+            return results
         } catch {
-            return nil
+            return []
         }
     }
 
@@ -442,10 +434,13 @@ final class SystemStats {
 
     // MARK: - Helpers
 
+    /// 固定長60の履歴に追加（末尾上書き + 先頭シフトで O(1) 書き込み）
     private func appendHistory(_ history: inout [Double], value: Double) {
-        history.append(value)
-        if history.count > 60 {
-            history.removeFirst()
+        if history.count >= 60 {
+            history.replaceSubrange(0..<59, with: history[1..<60])
+            history[59] = value
+        } else {
+            history.append(value)
         }
     }
 
