@@ -136,13 +136,23 @@ struct MenuBarLabel: View {
             return NSImage(size: NSSize(width: 1, height: 1))
         }
 
-        let smallSize: CGFloat = 9
+        // バー項目数に応じてサイズを自動調整（2行: 9pt, 3行: 7pt）
+        struct BarItem {
+            let label: NSAttributedString
+            let fill: Double
+            let color: NSColor
+        }
+
+        // 表示ON の項目をカウントしてフォント決定
+        let barCount = [showCPU, showRAM, showGPU].filter { $0 }.count
+        let maxRows = min(barCount, 3)
+        let smallSize: CGFloat = maxRows >= 3 ? 7 : 9
         let lblFont = NSFont.systemFont(ofSize: smallSize, weight: .semibold)
         let spdFont = NSFont.monospacedDigitSystemFont(ofSize: smallSize, weight: .medium)
         let labelColor = NSColor.secondaryLabelColor
 
-        let barW: CGFloat = 36
-        let barH: CGFloat = 5
+        let barW: CGFloat = maxRows >= 3 ? 30 : 36
+        let barH: CGFloat = maxRows >= 3 ? 4 : 5
         let pad: CGFloat = 4
 
         let upStr = "↑" + SystemStats.formatSpeedAuto(stats.networkUpSpeed)
@@ -150,12 +160,7 @@ struct MenuBarLabel: View {
         let upAttr = NSAttributedString(string: upStr, attributes: [.font: spdFont, .foregroundColor: upNS])
         let downAttr = NSAttributedString(string: downStr, attributes: [.font: spdFont, .foregroundColor: downNS])
 
-        // バー項目を構築（CPU / RAM / GPU）→ 最大2行
-        struct BarItem {
-            let label: NSAttributedString
-            let fill: Double
-            let color: NSColor
-        }
+        // バー項目を構築（CPU / RAM / GPU）→ 最大3行
         var barItems: [BarItem] = []
         if showCPU {
             barItems.append(BarItem(
@@ -172,7 +177,7 @@ struct MenuBarLabel: View {
                 label: NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
                 fill: stats.gpuUsage / 100, color: gpuNS))
         }
-        barItems = Array(barItems.prefix(2))
+        barItems = Array(barItems.prefix(3))
 
         // 行データ
         struct RowInfo {
@@ -183,28 +188,27 @@ struct MenuBarLabel: View {
         }
 
         var rows: [RowInfo] = []
+        // ネットワーク速度は先頭2行の右側に配置
         let speeds: [NSAttributedString?] = showNet ? [upAttr, downAttr] : [nil, nil]
 
-        if barItems.count >= 2 {
-            rows.append(RowInfo(label: barItems[0].label, barFill: barItems[0].fill,
-                                barColor: barItems[0].color, speed: speeds[0]))
-            rows.append(RowInfo(label: barItems[1].label, barFill: barItems[1].fill,
-                                barColor: barItems[1].color, speed: speeds[1]))
-        } else if barItems.count == 1 {
-            rows.append(RowInfo(label: barItems[0].label, barFill: barItems[0].fill,
-                                barColor: barItems[0].color, speed: speeds[0]))
-            if showNet {
-                rows.append(RowInfo(speed: speeds[1]))
-            }
-        } else if showNet {
+        for (i, item) in barItems.enumerated() {
+            rows.append(RowInfo(label: item.label, barFill: item.fill,
+                                barColor: item.color, speed: i < 2 ? speeds[i] : nil))
+        }
+        // バー項目なし + ネットワークのみ
+        if barItems.isEmpty && showNet {
             rows.append(RowInfo(speed: upAttr))
+            rows.append(RowInfo(speed: downAttr))
+        }
+        // バー項目1つ + ネットワークの↓が未配置
+        if barItems.count == 1 && showNet {
             rows.append(RowInfo(speed: downAttr))
         }
 
         // サイズ計算
         let sampleLbl = NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor])
         let rowH = max(sampleLbl.size().height, upAttr.size().height)
-        let rowGap: CGFloat = rows.count > 1 ? 1 : 0
+        let rowGap: CGFloat = rows.count > 1 ? 0 : 0
         let totalH = rowH * CGFloat(rows.count) + rowGap * CGFloat(max(rows.count - 1, 0))
 
         let hasLabel = rows.contains(where: { $0.label != nil })
