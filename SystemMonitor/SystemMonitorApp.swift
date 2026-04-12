@@ -120,16 +120,16 @@ struct MenuBarLabel: View {
             let labelFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
             let labelColor = NSColor.secondaryLabelColor
             let str = NSMutableAttributedString()
-            var needsSpace = false
             func lbl(_ t: String) {
                 str.append(NSAttributedString(string: t, attributes: [.font: labelFont, .foregroundColor: labelColor]))
             }
             func val(_ t: String, _ c: NSColor) {
                 str.append(NSAttributedString(string: t, attributes: [.font: valueFont, .foregroundColor: c]))
             }
-            if itemCPU { if needsSpace { lbl(" ") }; lbl("CPU "); val(cpuVal, cpuNS); needsSpace = true }
-            if itemRAM { if needsSpace { lbl(" ") }; lbl("MEM "); val(memVal, memNS); needsSpace = true }
-            if itemGPU { if needsSpace { lbl(" ") }; lbl("GPU "); val(gpuVal, gpuNS); needsSpace = true }
+            func sep() { if str.length > 0 { lbl(" ") } }
+            if itemCPU { sep(); lbl("CPU "); val(cpuVal, cpuNS) }
+            if itemRAM { sep(); lbl("MEM "); val(memVal, memNS) }
+            if itemGPU { sep(); lbl("GPU "); val(gpuVal, gpuNS) }
             if itemNet { lbl(" ↑"); val(upVal, upNS); lbl(" ↓"); val(downVal, downNS) }
 
             let size = str.size()
