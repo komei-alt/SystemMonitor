@@ -70,6 +70,7 @@ final class SystemStats {
     private let hostPort = mach_host_self()
     private var timer: Timer?
     private var previousCPUTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
+    private var previousProcCPUTimes: [pid_t: UInt64] = [:]
     private var previousNetworkBytes: (sent: UInt64, received: UInt64)?
     private var lastUpdateTime: Date?
     private var currentInterval: Double = 2.0
@@ -298,55 +299,73 @@ final class SystemStats {
 
     // MARK: - Top Processes Monitoring
 
+    /// libproc API でプロセス情報を取得（fork() を完全回避）
     private func updateTopProcesses() {
-        // CPU Top 3 と Memory Top 3 を別々のソート済みコマンドで取得（全プロセス展開を回避）
-        topCPUProcesses = runSortedPS(sortFlag: "-pcpu", limit: 3).map {
-            ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024)
-        }
-        topMemoryProcesses = runSortedPS(sortFlag: "-rss", limit: 3).map {
-            ProcessUsage(name: $0.name, cpu: $0.cpu, memory: $0.memKB * 1024)
-        }
-    }
+        // 全PIDを取得
+        var pids = [pid_t](repeating: 0, count: 2048)
+        let byteCount = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids,
+                                       Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard byteCount > 0 else { return }
+        let pidCount = Int(byteCount) / MemoryLayout<pid_t>.size
 
-    private struct RawProc {
-        let name: String
-        let cpu: Double
-        let memKB: UInt64
-    }
-
-    /// ps でソート済み上位N件を取得（shell pipe で出力を限定）
-    private func runSortedPS(sortFlag: String, limit: Int) -> [RawProc] {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", "ps -Aro pcpu=,rss=,comm= | head -n \(limit)"]
-        if sortFlag == "-rss" {
-            proc.arguments = ["-c", "ps -Amo pcpu=,rss=,comm= | head -n \(limit)"]
+        struct ProcSnap {
+            let pid: pid_t
+            let name: String
+            let rss: UInt64
+            let cpuTime: UInt64
         }
 
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
+        let taskInfoSize = Int32(MemoryLayout<proc_taskinfo>.size)
+        var snapshots: [ProcSnap] = []
+        snapshots.reserveCapacity(pidCount)
 
-        do {
-            try proc.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
+        var nameBuffer = [CChar](repeating: 0, count: 1024)
 
-            var results: [RawProc] = []
-            for line in output.split(separator: "\n") {
-                let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-                guard parts.count >= 3,
-                      let cpu = Double(parts[0]),
-                      let rss = UInt64(parts[1]) else { continue }
-                let name = URL(fileURLWithPath: String(parts[2])).lastPathComponent
-                if sortFlag == "-pcpu" && cpu <= 0 { continue }
-                results.append(RawProc(name: name, cpu: cpu, memKB: rss))
+        for i in 0..<pidCount {
+            let pid = pids[i]
+            guard pid > 0 else { continue }
+
+            var info = proc_taskinfo()
+            guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, taskInfoSize) == taskInfoSize else { continue }
+
+            nameBuffer.withUnsafeMutableBufferPointer { buf in
+                _ = proc_name(pid, buf.baseAddress, UInt32(buf.count))
             }
-            return results
-        } catch {
-            return []
+            let name = String(cString: nameBuffer)
+            guard !name.isEmpty else { continue }
+
+            let cpuTime = info.pti_total_user + info.pti_total_system
+            snapshots.append(ProcSnap(pid: pid, name: name, rss: info.pti_resident_size, cpuTime: cpuTime))
         }
+
+        // CPU %: 前回との差分から算出
+        let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
+        let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
+
+        var cpuRanking: [(name: String, cpuPercent: Double, rss: UInt64)] = []
+        var newCPUTimes: [pid_t: UInt64] = Dictionary(minimumCapacity: snapshots.count)
+
+        for snap in snapshots {
+            newCPUTimes[snap.pid] = snap.cpuTime
+            if let prev = previousProcCPUTimes[snap.pid], snap.cpuTime > prev {
+                let delta = snap.cpuTime - prev
+                let pct = Double(delta) / Double(elapsedNs) * 100.0
+                if pct > 0.1 {
+                    cpuRanking.append((snap.name, pct, snap.rss))
+                }
+            }
+        }
+        previousProcCPUTimes = newCPUTimes
+
+        topCPUProcesses = cpuRanking
+            .sorted { $0.cpuPercent > $1.cpuPercent }
+            .prefix(3)
+            .map { ProcessUsage(name: $0.name, cpu: $0.cpuPercent, memory: $0.rss) }
+
+        topMemoryProcesses = snapshots
+            .sorted { $0.rss > $1.rss }
+            .prefix(3)
+            .map { ProcessUsage(name: $0.name, cpu: 0, memory: $0.rss) }
     }
 
     // MARK: - GPU Monitoring
