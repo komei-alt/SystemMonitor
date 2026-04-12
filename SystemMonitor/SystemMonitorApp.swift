@@ -92,23 +92,7 @@ struct MenuBarLabel: View {
     @AppStorage("showNetwork") private var showNetwork = true
 
     var body: some View {
-        let img = renderImage()
-        // 画像が空（幅0）の場合はテキストフォールバック
-        if img.size.width > 1 {
-            Image(nsImage: img)
-        } else {
-            Text("CPU \(Int(stats.cpuUsage))%")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-        }
-    }
-
-    private var changeTrackers: some View {
-        EmptyView()
-            .onChange(of: cpuColorName)     { _, _ in SymbolCache.invalidate() }
-            .onChange(of: memoryColorName)  { _, _ in SymbolCache.invalidate() }
-            .onChange(of: netUpColorName)   { _, _ in SymbolCache.invalidate() }
-            .onChange(of: netDownColorName) { _, _ in SymbolCache.invalidate() }
-            .onChange(of: menuBarSizeRaw)   { _, _ in SymbolCache.invalidate() }
+        Text("SysMon")  // DEBUG: 最小テスト
     }
 
     private func renderImage() -> NSImage {
