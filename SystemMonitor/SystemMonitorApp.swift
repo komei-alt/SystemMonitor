@@ -5,6 +5,18 @@ import AppKit
 struct SystemMonitorApp: App {
     @State private var stats = SystemStats()
 
+    init() {
+        UserDefaults.standard.register(defaults: [
+            "showCPU": true,
+            "showRAM": true,
+            "showGPU": false,
+            "showNetwork": true,
+            "updateInterval": 2.0,
+            "menuBarSize": MenuBarSize.compact.rawValue,
+            "popoverWidth": 360.0,
+        ])
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MonitorPopoverView(stats: stats)
