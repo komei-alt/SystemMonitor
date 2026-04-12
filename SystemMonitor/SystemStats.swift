@@ -299,78 +299,85 @@ final class SystemStats {
 
     // MARK: - Top Processes Monitoring
 
-    /// libproc API でプロセス情報を取得（fork() を完全回避）
+    /// libproc API でプロセス情報を取得（メモリ効率最適化: Top N のみ保持）
     private func updateTopProcesses() {
-        // 全PIDを取得
-        var pids = [pid_t](repeating: 0, count: 2048)
-        let byteCount = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids,
-                                       Int32(pids.count * MemoryLayout<pid_t>.size))
-        guard byteCount > 0 else { return }
-        let pidCount = Int(byteCount) / MemoryLayout<pid_t>.size
+        autoreleasepool {
+            // 全PIDを取得（スタック上の固定バッファ）
+            let maxPids = 2048
+            let pids = UnsafeMutablePointer<pid_t>.allocate(capacity: maxPids)
+            defer { pids.deallocate() }
 
-        struct ProcSnap {
-            let pid: pid_t
-            let name: String
-            let rss: UInt64
-            let cpuTime: UInt64
-        }
+            let byteCount = proc_listpids(UInt32(PROC_ALL_PIDS), 0, pids,
+                                           Int32(maxPids * MemoryLayout<pid_t>.size))
+            guard byteCount > 0 else { return }
+            let pidCount = Int(byteCount) / MemoryLayout<pid_t>.size
 
-        let taskInfoSize = Int32(MemoryLayout<proc_taskinfo>.size)
-        var snapshots: [ProcSnap] = []
-        snapshots.reserveCapacity(pidCount)
+            let taskInfoSize = Int32(MemoryLayout<proc_taskinfo>.size)
+            let nameBuffer = UnsafeMutablePointer<CChar>.allocate(capacity: 256)
+            defer { nameBuffer.deallocate() }
 
-        var nameBuffer = [CChar](repeating: 0, count: 1024)
+            // Top 3 のみ保持するヒープ（全スナップショット配列を回避）
+            var cpuTop3: [(pid: pid_t, name: String, pct: Double, rss: UInt64)] = []
+            var memTop3: [(name: String, rss: UInt64)] = []
+            var newCPUTimes: [pid_t: UInt64] = Dictionary(minimumCapacity: pidCount)
 
-        for i in 0..<pidCount {
-            let pid = pids[i]
-            guard pid > 0 else { continue }
+            let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
+            let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
 
-            var info = proc_taskinfo()
-            guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, taskInfoSize) == taskInfoSize else { continue }
+            for i in 0..<pidCount {
+                let pid = pids[i]
+                guard pid > 0 else { continue }
 
-            nameBuffer.withUnsafeMutableBufferPointer { buf in
-                _ = proc_name(pid, buf.baseAddress, UInt32(buf.count))
-            }
-            let name = String(cString: nameBuffer)
-            guard !name.isEmpty else { continue }
+                var info = proc_taskinfo()
+                guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, taskInfoSize) == taskInfoSize else { continue }
 
-            let cpuTime = info.pti_total_user + info.pti_total_system
-            snapshots.append(ProcSnap(pid: pid, name: name, rss: info.pti_resident_size, cpuTime: cpuTime))
-        }
+                let cpuTime = info.pti_total_user + info.pti_total_system
+                newCPUTimes[pid] = cpuTime
 
-        // CPU %: 前回との差分から算出
-        let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
-        let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
+                // プロセス名は Top 候補の場合のみ取得（システムコール削減）
+                let rss = info.pti_resident_size
+                var cpuPct = 0.0
 
-        var cpuRanking: [(name: String, cpuPercent: Double, rss: UInt64)] = []
-        var newCPUTimes: [pid_t: UInt64] = Dictionary(minimumCapacity: snapshots.count)
+                if let prev = previousProcCPUTimes[pid], cpuTime > prev {
+                    cpuPct = Double(cpuTime - prev) / Double(elapsedNs) * 100.0
+                }
 
-        for snap in snapshots {
-            newCPUTimes[snap.pid] = snap.cpuTime
-            if let prev = previousProcCPUTimes[snap.pid], snap.cpuTime > prev {
-                let delta = snap.cpuTime - prev
-                let pct = Double(delta) / Double(elapsedNs) * 100.0
-                if pct > 0.1 {
-                    cpuRanking.append((snap.name, pct, snap.rss))
+                let isTopCPU = cpuPct > 0.1 && (cpuTop3.count < 3 || cpuPct > (cpuTop3.last?.pct ?? 0))
+                let isTopMem = memTop3.count < 3 || rss > (memTop3.last?.rss ?? 0)
+
+                if isTopCPU || isTopMem {
+                    proc_name(pid, nameBuffer, 256)
+                    let name = String(cString: nameBuffer)
+                    guard !name.isEmpty else { continue }
+
+                    if isTopCPU {
+                        cpuTop3.append((pid, name, cpuPct, rss))
+                        cpuTop3.sort { $0.pct > $1.pct }
+                        if cpuTop3.count > 3 { cpuTop3.removeLast() }
+                    }
+                    if isTopMem {
+                        memTop3.append((name, rss))
+                        memTop3.sort { $0.rss > $1.rss }
+                        if memTop3.count > 3 { memTop3.removeLast() }
+                    }
                 }
             }
+
+            previousProcCPUTimes = newCPUTimes
+
+            topCPUProcesses = cpuTop3.map {
+                ProcessUsage(name: $0.name, cpu: $0.pct, memory: $0.rss)
+            }
+            topMemoryProcesses = memTop3.map {
+                ProcessUsage(name: $0.name, cpu: 0, memory: $0.rss)
+            }
         }
-        previousProcCPUTimes = newCPUTimes
-
-        topCPUProcesses = cpuRanking
-            .sorted { $0.cpuPercent > $1.cpuPercent }
-            .prefix(3)
-            .map { ProcessUsage(name: $0.name, cpu: $0.cpuPercent, memory: $0.rss) }
-
-        topMemoryProcesses = snapshots
-            .sorted { $0.rss > $1.rss }
-            .prefix(3)
-            .map { ProcessUsage(name: $0.name, cpu: 0, memory: $0.rss) }
     }
 
     // MARK: - GPU Monitoring
 
-    /// GPU使用率を IOAccelerator の PerformanceStatistics から取得（軽量）
+    /// GPU使用率を IOAccelerator の PerformanceStatistics から取得
+    /// CFDictionary を Swift Dictionary にコピーせず、キー単位で直接参照
     private func updateGPUUsage() {
         guard let matching = IOServiceMatching("IOAccelerator") else { return }
         var iterator: io_iterator_t = 0
@@ -379,17 +386,22 @@ final class SystemStats {
 
         var service = IOIteratorNext(iterator)
         while service != 0 {
-            // PerformanceStatistics のみ個別取得（全プロパティコピーを回避）
             if let perfRef = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0) {
-                let perfStats = perfRef.takeRetainedValue()
-                if let dict = perfStats as? [String: Any] {
-                    if let util = dict["Device Utilization %"] as? Int {
-                        gpuUsage = Double(util)
-                    } else if let util = dict["GPU Activity(%)"] as? Int {
-                        gpuUsage = Double(util)
-                    } else if let util = dict["gpuCoreUtilizationComponent"] as? Int {
-                        gpuUsage = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
-                    }
+                let cfDict = perfRef.takeRetainedValue() as! CFDictionary
+                // CFDictionary から個別キーを直接取得（Swift Dict 変換を回避）
+                func readInt(_ key: String) -> Int? {
+                    var value: UnsafeRawPointer?
+                    let cfKey = key as CFString
+                    guard CFDictionaryGetValueIfPresent(cfDict, Unmanaged.passUnretained(cfKey).toOpaque(), &value),
+                          let raw = value else { return nil }
+                    return (raw.load(as: Unmanaged<NSNumber>.self).takeUnretainedValue()).intValue
+                }
+                if let util = readInt("Device Utilization %") {
+                    gpuUsage = Double(util)
+                } else if let util = readInt("GPU Activity(%)") {
+                    gpuUsage = Double(util)
+                } else if let util = readInt("gpuCoreUtilizationComponent") {
+                    gpuUsage = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
                 }
             }
             IOObjectRelease(service)
