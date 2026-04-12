@@ -1,4 +1,5 @@
 import Foundation
+import IOKit
 import Observation
 
 // MARK: - プロセス使用量モデル
@@ -36,6 +37,7 @@ final class SystemStats {
 
     var topCPUProcesses: [ProcessUsage] = []
     var topMemoryProcesses: [ProcessUsage] = []
+    var topGPUProcesses: [ProcessUsage] = []
 
     // MARK: - Settings (observable)
 
@@ -126,6 +128,7 @@ final class SystemStats {
             updateMemory()
             updateNetwork()
             updateTopProcesses()
+            updateTopGPUProcesses()
             lastUpdateTime = Date()
         }
     }
@@ -345,6 +348,80 @@ final class SystemStats {
             return String(data: data, encoding: .utf8)
         } catch {
             return nil
+        }
+    }
+
+    // MARK: - GPU Client Monitoring
+
+    private func updateTopGPUProcesses() {
+        var pidInfo: [pid_t: (name: String, resourceBytes: UInt64, clientCount: Int)] = [:]
+
+        guard let matching = IOServiceMatching("IOAccelerator") else {
+            topGPUProcesses = []
+            return
+        }
+
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            topGPUProcesses = []
+            return
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            enumerateGPUClients(entry: service, depth: 0, into: &pidInfo)
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+
+        topGPUProcesses = pidInfo
+            .filter { $0.key > 0 && $0.key != selfPID }
+            .sorted {
+                if $0.value.resourceBytes != $1.value.resourceBytes {
+                    return $0.value.resourceBytes > $1.value.resourceBytes
+                }
+                return $0.value.clientCount > $1.value.clientCount
+            }
+            .prefix(3)
+            .map { ProcessUsage(name: $0.value.name, cpu: 0, memory: $0.value.resourceBytes) }
+    }
+
+    private func enumerateGPUClients(
+        entry: io_object_t, depth: Int,
+        into pidInfo: inout [pid_t: (name: String, resourceBytes: UInt64, clientCount: Int)]
+    ) {
+        guard depth < 4 else { return }
+
+        var props: Unmanaged<CFMutableDictionary>?
+        if IORegistryEntryCreateCFProperties(entry, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+           let dict = props?.takeRetainedValue() as? [String: Any],
+           let creator = dict["IOUserClientCreator"] as? String {
+            let comps = creator.split(separator: ",", maxSplits: 1)
+            if comps.count >= 2,
+               let pidStr = comps[0].split(separator: " ").last,
+               let pid = pid_t(pidStr) {
+                let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
+                var info = pidInfo[pid] ?? (name: name, resourceBytes: 0, clientCount: 0)
+                info.clientCount += 1
+                if let size = dict["IOGPUAllocSize"] as? UInt64 {
+                    info.resourceBytes += size
+                }
+                pidInfo[pid] = info
+            }
+        }
+
+        var childIter: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(entry, kIOServicePlane, &childIter) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(childIter) }
+
+        var child = IOIteratorNext(childIter)
+        while child != 0 {
+            enumerateGPUClients(entry: child, depth: depth + 1, into: &pidInfo)
+            IOObjectRelease(child)
+            child = IOIteratorNext(childIter)
         }
     }
 

@@ -80,7 +80,7 @@ struct MonitorPopoverView: View {
     // MARK: - Top Processes
 
     private var topProcessesSection: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 8) {
             processList(
                 title: "CPU トップ",
                 icon: "flame.fill",
@@ -94,6 +94,15 @@ struct MonitorPopoverView: View {
                 processes: stats.topMemoryProcesses,
                 color: memColor,
                 valueLabel: { SystemStats.formatBytes($0.memory) }
+            )
+            processList(
+                title: "GPU トップ",
+                icon: "bolt.fill",
+                processes: stats.topGPUProcesses,
+                color: .yellow,
+                valueLabel: { proc in
+                    proc.memory > 0 ? SystemStats.formatBytes(proc.memory) : "Active"
+                }
             )
         }
     }
@@ -130,6 +139,7 @@ struct MonitorPopoverView: View {
                             .font(.system(size: 10))
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .help(proc.name)
                         Spacer(minLength: 2)
                         Text(valueLabel(proc))
                             .font(.system(size: 10, weight: .medium, design: .rounded))
