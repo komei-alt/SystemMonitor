@@ -486,16 +486,19 @@ final class SystemStats {
     }
 
     static func formatSpeed(_ bytesPerSec: UInt64, unit: SpeedUnit = .megabytes) -> String {
-        let fig = "\u{2007}" // figure space（monospacedDigit で数字と同幅）
         switch unit {
         case .megabytes:
             let mb = Double(bytesPerSec) / 1_000_000
-            return String(format: "%5.1f", mb)
-                .replacingOccurrences(of: " ", with: fig) + "MB"
+            if mb >= 100 {
+                return String(format: "%.0fMB", mb)
+            }
+            return String(format: "%.1fMB", mb)
         case .megabits:
             let mbps = Double(bytesPerSec) * 8 / 1_000_000
-            return String(format: "%6.1f", mbps)
-                .replacingOccurrences(of: " ", with: fig) + "Mb"
+            if mbps >= 100 {
+                return String(format: "%.0fMb", mbps)
+            }
+            return String(format: "%.1fMb", mbps)
         }
     }
 

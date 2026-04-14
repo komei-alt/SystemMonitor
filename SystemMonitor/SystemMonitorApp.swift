@@ -142,7 +142,7 @@ struct MenuBarLabel: View {
             if itemCPU { sep(); lbl("CPU "); val(cpuVal, cpuNS) }
             if itemRAM { sep(); lbl("MEM "); val(memVal, memNS) }
             if itemGPU { sep(); lbl("GPU "); val(gpuVal, gpuNS) }
-            if itemNet { lbl(" ↑"); val(upVal, upNS); lbl(" ↓"); val(downVal, downNS) }
+            if itemNet { sep(); lbl("↑"); val(upVal, upNS); lbl(" ↓"); val(downVal, downNS) }
 
             let size = str.size()
             let imgSize = NSSize(width: ceil(size.width), height: ceil(size.height))
