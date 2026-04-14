@@ -72,6 +72,7 @@ final class SystemStats {
     private var timer: Timer?
     private var previousCPUTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
     private var previousProcCPUTimes: [pid_t: UInt64] = [:]
+    private var previousGPUTimes: [pid_t: UInt64] = [:]
     private var previousNetworkBytes: (sent: UInt64, received: UInt64)?
     private var lastUpdateTime: Date?
     private var currentInterval: Double = 2.0
@@ -432,11 +433,14 @@ final class SystemStats {
         appendHistory(&gpuHistory, value: gpuUsage)
     }
 
-    /// GPUクライアント（プロセス）を IOAccelerator の直接子から取得
-    /// Apple Silicon: AGXAcceleratorG15X 等が IOAccelerator にマッチ
-    /// Intel: IOAccelerator 直下に GPU クライアントが存在
+    /// GPUクライアント（プロセス）を IOAccelerator の直接子から取得し、
+    /// AppUsage.accumulatedGPUTime の差分からGPU使用率を算出
     private func updateTopGPUProcesses() {
-        var pidInfo: [pid_t: (name: String, clientCount: Int)] = [:]
+        // PID → (プロセス名, 累積GPU時間の合計)
+        var pidInfo: [pid_t: (name: String, gpuTime: UInt64)] = [:]
+
+        let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
+        let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
 
         // IOAccelerator にマッチ（Apple Silicon の AGXAccelerator* を含む）
         // フォールバックとして IOGPUDevice も試行
@@ -453,16 +457,32 @@ final class SystemStats {
                 if IORegistryEntryGetChildIterator(device, kIOServicePlane, &childIter) == KERN_SUCCESS {
                     var child = IOIteratorNext(childIter)
                     while child != 0 {
-                        if let ref = IORegistryEntryCreateCFProperty(child, "IOUserClientCreator" as CFString, kCFAllocatorDefault, 0) {
-                            let creator = ref.takeRetainedValue() as! String
+                        // IOUserClientCreator からPIDとプロセス名を取得
+                        if let creatorRef = IORegistryEntryCreateCFProperty(child, "IOUserClientCreator" as CFString, kCFAllocatorDefault, 0) {
+                            let creator = creatorRef.takeRetainedValue() as! String
                             let comps = creator.split(separator: ",", maxSplits: 1)
                             if comps.count >= 2,
                                let pidStr = comps[0].split(separator: " ").last,
                                let pid = pid_t(pidStr) {
                                 let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
-                                var info = pidInfo[pid] ?? (name: name, clientCount: 0)
-                                info.clientCount += 1
-                                pidInfo[pid] = info
+
+                                // AppUsage から accumulatedGPUTime を抽出
+                                var clientGPUTime: UInt64 = 0
+                                if let usageRef = IORegistryEntryCreateCFProperty(child, "AppUsage" as CFString, kCFAllocatorDefault, 0) {
+                                    if let usageArray = usageRef.takeRetainedValue() as? [[String: Any]] {
+                                        for entry in usageArray {
+                                            if let t = entry["accumulatedGPUTime"] as? UInt64 {
+                                                clientGPUTime += t
+                                            } else if let t = entry["accumulatedGPUTime"] as? Int64, t > 0 {
+                                                clientGPUTime += UInt64(t)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                var existing = pidInfo[pid] ?? (name: name, gpuTime: 0)
+                                existing.gpuTime += clientGPUTime
+                                pidInfo[pid] = existing
                             }
                         }
                         IOObjectRelease(child)
@@ -478,11 +498,25 @@ final class SystemStats {
 
         let selfPID = ProcessInfo.processInfo.processIdentifier
 
-        topGPUProcesses = pidInfo
-            .filter { $0.key > 0 && $0.key != selfPID }
-            .sorted { $0.value.clientCount > $1.value.clientCount }
+        // 差分からGPU使用率(%)を計算してソート
+        var gpuProcesses: [(name: String, gpuPct: Double)] = []
+        var newGPUTimes: [pid_t: UInt64] = [:]
+
+        for (pid, info) in pidInfo where pid > 0 && pid != selfPID {
+            newGPUTimes[pid] = info.gpuTime
+            var gpuPct = 0.0
+            if let prev = previousGPUTimes[pid], info.gpuTime > prev {
+                gpuPct = Double(info.gpuTime - prev) / Double(elapsedNs) * 100.0
+            }
+            gpuProcesses.append((name: info.name, gpuPct: gpuPct))
+        }
+
+        previousGPUTimes = newGPUTimes
+
+        topGPUProcesses = gpuProcesses
+            .sorted { $0.gpuPct > $1.gpuPct }
             .prefix(3)
-            .map { ProcessUsage(name: $0.value.name, cpu: 0, memory: 0) }
+            .map { ProcessUsage(name: $0.name, cpu: $0.gpuPct, memory: 0) }
     }
 
     // MARK: - Helpers

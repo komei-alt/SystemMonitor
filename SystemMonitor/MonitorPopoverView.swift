@@ -151,7 +151,7 @@ struct MonitorPopoverView: View {
                 processes: stats.topGPUProcesses,
                 color: gpuColor,
                 valueLabel: { proc in
-                    proc.memory > 0 ? SystemStats.formatBytes(proc.memory) : "Active"
+                    proc.cpu > 0.1 ? String(format: "%.1f%%", proc.cpu) : "Active"
                 }
             )
         }
