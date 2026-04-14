@@ -179,18 +179,36 @@ struct MonitorPopoverView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 ForEach(Array(processes.enumerated()), id: \.element.id) { i, proc in
-                    HStack(spacing: 4) {
-                        Text("\(i + 1)")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .frame(width: 14, height: 14)
-                            .background(color.opacity(i == 0 ? 1.0 : i == 1 ? 0.6 : 0.35), in: Circle())
-                        processNameView(proc: proc, color: color)
-                        Spacer(minLength: 2)
-                        Text(valueLabel(proc))
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(color)
+                    if proc.name == "その他" {
+                        // 「その他」行: バッジなし、控えめなスタイル
+                        HStack(spacing: 4) {
+                            Text("…")
+                                .font(.system(size: 8, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14, height: 14)
+                            Text("その他")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 2)
+                            Text(valueLabel(proc))
+                                .font(.system(size: 10, weight: .medium, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(color.opacity(0.5))
+                        }
+                    } else {
+                        HStack(spacing: 4) {
+                            Text("\(i + 1)")
+                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .frame(width: 14, height: 14)
+                                .background(color.opacity(i == 0 ? 1.0 : i == 1 ? 0.6 : 0.35), in: Circle())
+                            processNameView(proc: proc, color: color)
+                            Spacer(minLength: 2)
+                            Text(valueLabel(proc))
+                                .font(.system(size: 10, weight: .medium, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(color)
+                        }
                     }
                 }
             }

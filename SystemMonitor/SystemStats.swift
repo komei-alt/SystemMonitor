@@ -68,6 +68,7 @@ final class SystemStats {
     // MARK: - Private State
 
     private let hostPort = mach_host_self()
+    private let logicalCPUCount = ProcessInfo.processInfo.processorCount
     private var timer: Timer?
     private var previousCPUTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
     private var previousProcCPUTimes: [pid_t: UInt64] = [:]
@@ -321,6 +322,10 @@ final class SystemStats {
             var memTop3: [(name: String, rss: UInt64)] = []
             var newCPUTimes: [pid_t: UInt64] = Dictionary(minimumCapacity: pidCount)
 
+            // 「その他」計算用: 全プロセスの合計を追跡
+            var totalCPUPct = 0.0
+            var totalMemRSS: UInt64 = 0
+
             let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
             let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
 
@@ -341,6 +346,9 @@ final class SystemStats {
                 if let prev = previousProcCPUTimes[pid], cpuTime > prev {
                     cpuPct = Double(cpuTime - prev) / Double(elapsedNs) * 100.0
                 }
+
+                totalCPUPct += cpuPct
+                totalMemRSS += rss
 
                 let isTopCPU = cpuPct > 0.1 && (cpuTop3.count < 3 || cpuPct > (cpuTop3.last?.pct ?? 0))
                 let isTopMem = memTop3.count < 3 || rss > (memTop3.last?.rss ?? 0)
@@ -365,11 +373,28 @@ final class SystemStats {
 
             previousProcCPUTimes = newCPUTimes
 
+            // CPU: プロセスCPU%はスレッド合計(0〜N*100%)→コア数で割ってゲージスケール(0-100%)に正規化
+            let cores = Double(logicalCPUCount)
+            let top3CPUSum = cpuTop3.reduce(0.0) { $0 + $1.pct }
+            let normalizedTop3CPU = top3CPUSum / cores
+            let otherCPU = max(cpuUsage - normalizedTop3CPU, 0)
+
             topCPUProcesses = cpuTop3.map {
-                ProcessUsage(name: $0.name, cpu: $0.pct, memory: $0.rss)
+                ProcessUsage(name: $0.name, cpu: $0.pct / cores, memory: $0.rss)
             }
+            if otherCPU > 0.1 {
+                topCPUProcesses.append(ProcessUsage(name: "その他", cpu: otherCPU, memory: 0))
+            }
+
+            // メモリ: ゲージ(Active+Wired+Compressed)とトップ3 RSSの差分を「その他」として表示
+            let top3MemSum = memTop3.reduce(UInt64(0)) { $0 + $1.rss }
+            let otherMem = memoryUsed > top3MemSum ? memoryUsed - top3MemSum : 0
+
             topMemoryProcesses = memTop3.map {
                 ProcessUsage(name: $0.name, cpu: 0, memory: $0.rss)
+            }
+            if otherMem > 0 {
+                topMemoryProcesses.append(ProcessUsage(name: "その他", cpu: 0, memory: otherMem))
             }
         }
     }
@@ -407,48 +432,48 @@ final class SystemStats {
         appendHistory(&gpuHistory, value: gpuUsage)
     }
 
-    /// GPUクライアント（プロセス）を IOGPUDevice の直接子から取得（depth 1のみ）
+    /// GPUクライアント（プロセス）を IOAccelerator の直接子から取得
+    /// Apple Silicon: AGXAcceleratorG15X 等が IOAccelerator にマッチ
+    /// Intel: IOAccelerator 直下に GPU クライアントが存在
     private func updateTopGPUProcesses() {
         var pidInfo: [pid_t: (name: String, clientCount: Int)] = [:]
 
-        guard let matching = IOServiceMatching("IOGPUDevice") else {
-            topGPUProcesses = []
-            return
-        }
+        // IOAccelerator にマッチ（Apple Silicon の AGXAccelerator* を含む）
+        // フォールバックとして IOGPUDevice も試行
+        let classNames = ["IOAccelerator", "IOGPUDevice"]
+        for className in classNames {
+            guard let matching = IOServiceMatching(className) else { continue }
+            var iterator: io_iterator_t = 0
+            guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { continue }
+            defer { IOObjectRelease(iterator) }
 
-        var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
-            topGPUProcesses = []
-            return
-        }
-        defer { IOObjectRelease(iterator) }
-
-        var device = IOIteratorNext(iterator)
-        while device != 0 {
-            // 直接子のみ（再帰なし）
-            var childIter: io_iterator_t = 0
-            if IORegistryEntryGetChildIterator(device, kIOServicePlane, &childIter) == KERN_SUCCESS {
-                var child = IOIteratorNext(childIter)
-                while child != 0 {
-                    if let ref = IORegistryEntryCreateCFProperty(child, "IOUserClientCreator" as CFString, kCFAllocatorDefault, 0) {
-                        let creator = ref.takeRetainedValue() as! String
-                        let comps = creator.split(separator: ",", maxSplits: 1)
-                        if comps.count >= 2,
-                           let pidStr = comps[0].split(separator: " ").last,
-                           let pid = pid_t(pidStr) {
-                            let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
-                            var info = pidInfo[pid] ?? (name: name, clientCount: 0)
-                            info.clientCount += 1
-                            pidInfo[pid] = info
+            var device = IOIteratorNext(iterator)
+            while device != 0 {
+                var childIter: io_iterator_t = 0
+                if IORegistryEntryGetChildIterator(device, kIOServicePlane, &childIter) == KERN_SUCCESS {
+                    var child = IOIteratorNext(childIter)
+                    while child != 0 {
+                        if let ref = IORegistryEntryCreateCFProperty(child, "IOUserClientCreator" as CFString, kCFAllocatorDefault, 0) {
+                            let creator = ref.takeRetainedValue() as! String
+                            let comps = creator.split(separator: ",", maxSplits: 1)
+                            if comps.count >= 2,
+                               let pidStr = comps[0].split(separator: " ").last,
+                               let pid = pid_t(pidStr) {
+                                let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
+                                var info = pidInfo[pid] ?? (name: name, clientCount: 0)
+                                info.clientCount += 1
+                                pidInfo[pid] = info
+                            }
                         }
+                        IOObjectRelease(child)
+                        child = IOIteratorNext(childIter)
                     }
-                    IOObjectRelease(child)
-                    child = IOIteratorNext(childIter)
+                    IOObjectRelease(childIter)
                 }
-                IOObjectRelease(childIter)
+                IOObjectRelease(device)
+                device = IOIteratorNext(iterator)
             }
-            IOObjectRelease(device)
-            device = IOIteratorNext(iterator)
+            if !pidInfo.isEmpty { break }
         }
 
         let selfPID = ProcessInfo.processInfo.processIdentifier
