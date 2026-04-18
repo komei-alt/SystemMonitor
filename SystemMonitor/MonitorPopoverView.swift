@@ -62,6 +62,12 @@ struct MonitorPopoverView: View {
 
             PopoverResizeHandle(width: $popoverWidth)
         }
+        .onAppear {
+            stats.setDetailMonitoringEnabled(true)
+        }
+        .onDisappear {
+            stats.setDetailMonitoringEnabled(false)
+        }
     }
 
     // MARK: - Header

@@ -2,13 +2,13 @@ import Foundation
 import IOKit
 import Observation
 
-// MARK: - プロセス使用量モデル
+// MARK: - Process Usage Model
 
-struct ProcessUsage: Identifiable {
-    let id: String       // プロセス名ベースの安定ID（SwiftUI差分更新の効率化）
+struct ProcessUsage: Identifiable, Equatable, Sendable {
+    let id: String
     let name: String
-    let cpu: Double      // CPU使用率 (%)
-    let memory: UInt64   // メモリ使用量 (bytes)
+    let cpu: Double
+    let memory: UInt64
 
     init(name: String, cpu: Double, memory: UInt64) {
         self.id = name
@@ -18,140 +18,121 @@ struct ProcessUsage: Identifiable {
     }
 }
 
-@Observable
-final class SystemStats {
+// MARK: - Snapshot
 
-    // MARK: - CPU
+private struct MonitoringOptions: Sendable {
+    let includeGPU: Bool
+    let includeProcessDetails: Bool
+}
 
-    var cpuUsage: Double = 0
-    var cpuHistory: [Double] = Array(repeating: 0, count: 60)
+private struct MonitoringSnapshot: Sendable {
+    var cpuUsage: Double
+    var cpuHistory: [Double]
+    var memoryUsed: UInt64
+    var memoryTotal: UInt64
+    var memoryPercent: Double
+    var memoryHistory: [Double]
+    var networkUpSpeed: UInt64
+    var networkDownSpeed: UInt64
+    var uploadHistory: [Double]
+    var downloadHistory: [Double]
+    var gpuUsage: Double
+    var gpuHistory: [Double]
+    var topCPUProcesses: [ProcessUsage]
+    var topMemoryProcesses: [ProcessUsage]
+    var topGPUProcesses: [ProcessUsage]
 
-    // MARK: - Memory
-
-    var memoryUsed: UInt64 = 0
-    var memoryTotal: UInt64 = 0
-    var memoryPercent: Double = 0
-    var memoryHistory: [Double] = Array(repeating: 0, count: 60)
-
-    // MARK: - Network
-
-    var networkUpSpeed: UInt64 = 0
-    var networkDownSpeed: UInt64 = 0
-    var uploadHistory: [Double] = Array(repeating: 0, count: 60)
-    var downloadHistory: [Double] = Array(repeating: 0, count: 60)
-
-    // MARK: - GPU
-
-    var gpuUsage: Double = 0
-    var gpuHistory: [Double] = Array(repeating: 0, count: 60)
-
-    // MARK: - Top Processes
-
-    var topCPUProcesses: [ProcessUsage] = []
-    var topMemoryProcesses: [ProcessUsage] = []
-    var topGPUProcesses: [ProcessUsage] = []
-
-    // MARK: - Settings (observable)
-
-    var speedUnit: SpeedUnit = .megabytes
-
-    // MARK: - Menu Bar
-
-    var menuBarText: String {
-        let cpu = String(format: "CPU %2.0f%%", cpuUsage)
-        let mem = String(format: "MEM %2.0f%%", memoryPercent)
-        let up  = "↑\(Self.formatSpeed(networkUpSpeed, unit: speedUnit))"
-        let dn  = "↓\(Self.formatSpeed(networkDownSpeed, unit: speedUnit))"
-        return "\(cpu)  \(mem)  \(up) \(dn)"
+    init(memoryTotal: UInt64) {
+        cpuUsage = 0
+        cpuHistory = Array(repeating: 0, count: 60)
+        memoryUsed = 0
+        self.memoryTotal = memoryTotal
+        memoryPercent = 0
+        memoryHistory = Array(repeating: 0, count: 60)
+        networkUpSpeed = 0
+        networkDownSpeed = 0
+        uploadHistory = Array(repeating: 0, count: 60)
+        downloadHistory = Array(repeating: 0, count: 60)
+        gpuUsage = 0
+        gpuHistory = Array(repeating: 0, count: 60)
+        topCPUProcesses = []
+        topMemoryProcesses = []
+        topGPUProcesses = []
     }
+}
 
-    // MARK: - Private State
+// MARK: - Background Sampler
 
+private actor SystemSampler {
     private let hostPort = mach_host_self()
     private let logicalCPUCount = ProcessInfo.processInfo.processorCount
-    private var timer: Timer?
+
+    private var snapshot: MonitoringSnapshot
     private var previousCPUTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
     private var previousProcCPUTimes: [pid_t: UInt64] = [:]
     private var previousGPUTimes: [pid_t: UInt64] = [:]
     private var previousNetworkBytes: (sent: UInt64, received: UInt64)?
     private var lastUpdateTime: Date?
-    private var currentInterval: Double = 2.0
-    private var defaultsObserver: Any?
 
-    // MARK: - Lifecycle
-
-    init() {
-        memoryTotal = ProcessInfo.processInfo.physicalMemory
-        syncSettings()
-        startMonitoring()
-
-        defaultsObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.syncSettings()
-        }
+    init(memoryTotal: UInt64) {
+        snapshot = MonitoringSnapshot(memoryTotal: memoryTotal)
     }
 
-    deinit {
-        timer?.invalidate()
-        if let observer = defaultsObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-    }
-
-    // MARK: - Settings Sync
-
-    private func syncSettings() {
-        // Speed unit
-        let unitRaw = UserDefaults.standard.string(forKey: "speedUnit") ?? SpeedUnit.megabytes.rawValue
-        speedUnit = SpeedUnit(rawValue: unitRaw) ?? .megabytes
-
-        // Update interval
-        let stored = UserDefaults.standard.double(forKey: "updateInterval")
-        let newInterval = stored > 0 ? stored : 2.0
-        if newInterval != currentInterval {
-            currentInterval = newInterval
-            timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
-                self?.update()
-            }
-            RunLoop.main.add(timer!, forMode: .common)
-        }
-    }
-
-    // MARK: - Monitoring
-
-    func startMonitoring() {
-        timer?.invalidate()
-        let stored = UserDefaults.standard.double(forKey: "updateInterval")
-        currentInterval = stored > 0 ? stored : 2.0
-        timer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
-            self?.update()
-        }
-        RunLoop.main.add(timer!, forMode: .common)
-        // 初回更新をメインスレッドの次のサイクルに遅延（UI構築をブロックしない）
-        DispatchQueue.main.async { [weak self] in
-            self?.update()
-        }
-    }
-
-    private func update() {
+    func captureSample(intervalHint: Double, options: MonitoringOptions) -> MonitoringSnapshot {
         autoreleasepool {
-            updateCPU()
-            updateMemory()
-            updateNetwork()
-            updateTopProcesses()
-            updateGPUUsage()
-            updateTopGPUProcesses()
-            lastUpdateTime = Date()
+            let now = Date()
+            let elapsed = max(lastUpdateTime.map { now.timeIntervalSince($0) } ?? intervalHint, 0.1)
+
+            snapshot.cpuUsage = updateCPU()
+            appendHistory(&snapshot.cpuHistory, value: snapshot.cpuUsage)
+
+            let memory = updateMemory()
+            snapshot.memoryUsed = memory.used
+            snapshot.memoryPercent = memory.percent
+            appendHistory(&snapshot.memoryHistory, value: snapshot.memoryPercent)
+
+            let network = updateNetwork(elapsed: elapsed)
+            snapshot.networkUpSpeed = network.up
+            snapshot.networkDownSpeed = network.down
+            appendHistory(&snapshot.uploadHistory, value: Double(snapshot.networkUpSpeed))
+            appendHistory(&snapshot.downloadHistory, value: Double(snapshot.networkDownSpeed))
+
+            if options.includeGPU {
+                snapshot.gpuUsage = updateGPUUsage()
+                appendHistory(&snapshot.gpuHistory, value: snapshot.gpuUsage)
+            }
+
+            if options.includeProcessDetails {
+                let processes = updateTopProcesses(
+                    elapsed: elapsed,
+                    totalCPUUsage: snapshot.cpuUsage,
+                    memoryUsed: snapshot.memoryUsed
+                )
+                snapshot.topCPUProcesses = processes.cpu
+                snapshot.topMemoryProcesses = processes.memory
+                snapshot.topGPUProcesses = options.includeGPU
+                    ? updateTopGPUProcesses(elapsed: elapsed)
+                    : []
+            } else {
+                snapshot.topCPUProcesses = []
+                snapshot.topMemoryProcesses = []
+                snapshot.topGPUProcesses = []
+                previousProcCPUTimes.removeAll(keepingCapacity: true)
+                previousGPUTimes.removeAll(keepingCapacity: true)
+            }
+
+            if !options.includeGPU {
+                previousGPUTimes.removeAll(keepingCapacity: true)
+            }
+
+            lastUpdateTime = now
+            return snapshot
         }
     }
 
     // MARK: - CPU Monitoring
 
-    private func updateCPU() {
+    private func updateCPU() -> Double {
         var numCPUs: natural_t = 0
         var cpuInfo: processor_info_array_t?
         var numCPUInfo: mach_msg_type_number_t = 0
@@ -164,55 +145,56 @@ final class SystemStats {
             &numCPUInfo
         )
 
-        guard result == KERN_SUCCESS, let info = cpuInfo else { return }
+        guard result == KERN_SUCCESS, let info = cpuInfo else { return snapshot.cpuUsage }
         defer {
             let size = vm_size_t(numCPUInfo) * vm_size_t(MemoryLayout<integer_t>.stride)
             vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info), size)
         }
 
         var currentTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
+        currentTicks.reserveCapacity(Int(numCPUs))
 
         for i in 0..<Int(numCPUs) {
             let offset = i * Int(CPU_STATE_MAX)
-            let user   = UInt64(info[offset + Int(CPU_STATE_USER)])
+            let user = UInt64(info[offset + Int(CPU_STATE_USER)])
             let system = UInt64(info[offset + Int(CPU_STATE_SYSTEM)])
-            let idle   = UInt64(info[offset + Int(CPU_STATE_IDLE)])
-            let nice   = UInt64(info[offset + Int(CPU_STATE_NICE)])
+            let idle = UInt64(info[offset + Int(CPU_STATE_IDLE)])
+            let nice = UInt64(info[offset + Int(CPU_STATE_NICE)])
             currentTicks.append((user, system, idle, nice))
         }
 
-        if !previousCPUTicks.isEmpty && previousCPUTicks.count == currentTicks.count {
-            var totalUsed: UInt64 = 0
-            var totalAll: UInt64 = 0
+        defer { previousCPUTicks = currentTicks }
 
-            for i in 0..<currentTicks.count {
-                let prev = previousCPUTicks[i]
-                let curr = currentTicks[i]
-
-                let userDelta   = curr.user   &- prev.user
-                let systemDelta = curr.system &- prev.system
-                let idleDelta   = curr.idle   &- prev.idle
-                let niceDelta   = curr.nice   &- prev.nice
-
-                let used  = userDelta + systemDelta + niceDelta
-                let total = used + idleDelta
-
-                totalUsed += used
-                totalAll  += total
-            }
-
-            if totalAll > 0 {
-                cpuUsage = Double(totalUsed) / Double(totalAll) * 100.0
-            }
+        guard !previousCPUTicks.isEmpty, previousCPUTicks.count == currentTicks.count else {
+            return snapshot.cpuUsage
         }
 
-        previousCPUTicks = currentTicks
-        appendHistory(&cpuHistory, value: cpuUsage)
+        var totalUsed: UInt64 = 0
+        var totalAll: UInt64 = 0
+
+        for i in 0..<currentTicks.count {
+            let prev = previousCPUTicks[i]
+            let curr = currentTicks[i]
+
+            let userDelta = curr.user &- prev.user
+            let systemDelta = curr.system &- prev.system
+            let idleDelta = curr.idle &- prev.idle
+            let niceDelta = curr.nice &- prev.nice
+
+            let used = userDelta + systemDelta + niceDelta
+            let total = used + idleDelta
+
+            totalUsed += used
+            totalAll += total
+        }
+
+        guard totalAll > 0 else { return snapshot.cpuUsage }
+        return Double(totalUsed) / Double(totalAll) * 100.0
     }
 
     // MARK: - Memory Monitoring
 
-    private func updateMemory() {
+    private func updateMemory() -> (used: UInt64, percent: Double) {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
             MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size
@@ -224,49 +206,41 @@ final class SystemStats {
             }
         }
 
-        guard result == KERN_SUCCESS else { return }
-
-        let pageSize   = UInt64(vm_kernel_page_size)
-        let active     = UInt64(stats.active_count) * pageSize
-        let wired      = UInt64(stats.wire_count) * pageSize
-        let compressed = UInt64(stats.compressor_page_count) * pageSize
-
-        memoryUsed = active + wired + compressed
-        if memoryTotal > 0 {
-            memoryPercent = Double(memoryUsed) / Double(memoryTotal) * 100.0
+        guard result == KERN_SUCCESS else {
+            return (snapshot.memoryUsed, snapshot.memoryPercent)
         }
 
-        appendHistory(&memoryHistory, value: memoryPercent)
+        let pageSize = UInt64(vm_kernel_page_size)
+        let active = UInt64(stats.active_count) * pageSize
+        let wired = UInt64(stats.wire_count) * pageSize
+        let compressed = UInt64(stats.compressor_page_count) * pageSize
+
+        let used = active + wired + compressed
+        let percent = snapshot.memoryTotal > 0
+            ? Double(used) / Double(snapshot.memoryTotal) * 100.0
+            : 0
+
+        return (used, percent)
     }
 
     // MARK: - Network Monitoring
 
-    private func updateNetwork() {
+    private func updateNetwork(elapsed: TimeInterval) -> (up: UInt64, down: UInt64) {
         let current = Self.getNetworkBytes()
+        defer { previousNetworkBytes = current }
 
-        if let previous = previousNetworkBytes, let lastTime = lastUpdateTime {
-            let elapsed = Date().timeIntervalSince(lastTime)
-            if elapsed > 0.1 {
-                // カウンター減少時はラップアラウンドとみなしスキップ
-                let sentDelta = current.sent >= previous.sent
-                    ? current.sent - previous.sent : 0
-                let receivedDelta = current.received >= previous.received
-                    ? current.received - previous.received : 0
-
-                let upSpeed   = UInt64(Double(sentDelta) / elapsed)
-                let downSpeed = UInt64(Double(receivedDelta) / elapsed)
-
-                // 10Gbps (1.25GB/s) を上限とし、異常値を除外
-                let maxSpeed: UInt64 = 1_250_000_000
-                networkUpSpeed   = min(upSpeed, maxSpeed)
-                networkDownSpeed = min(downSpeed, maxSpeed)
-            }
+        guard let previous = previousNetworkBytes, elapsed > 0.1 else {
+            return (snapshot.networkUpSpeed, snapshot.networkDownSpeed)
         }
 
-        previousNetworkBytes = current
+        let sentDelta = current.sent >= previous.sent ? current.sent - previous.sent : 0
+        let receivedDelta = current.received >= previous.received ? current.received - previous.received : 0
 
-        appendHistory(&uploadHistory,   value: Double(networkUpSpeed))
-        appendHistory(&downloadHistory, value: Double(networkDownSpeed))
+        let upSpeed = UInt64(Double(sentDelta) / elapsed)
+        let downSpeed = UInt64(Double(receivedDelta) / elapsed)
+        let maxSpeed: UInt64 = 1_250_000_000
+
+        return (min(upSpeed, maxSpeed), min(downSpeed, maxSpeed))
     }
 
     private static func getNetworkBytes() -> (sent: UInt64, received: UInt64) {
@@ -284,12 +258,10 @@ final class SystemStats {
             if let addrPtr = entry.ifa_addr,
                addrPtr.pointee.sa_family == UInt8(AF_LINK) {
                 let name = String(cString: entry.ifa_name)
-                if !name.hasPrefix("lo") {
-                    if let data = entry.ifa_data {
-                        let networkData = data.assumingMemoryBound(to: if_data.self).pointee
-                        totalSent     += UInt64(networkData.ifi_obytes)
-                        totalReceived += UInt64(networkData.ifi_ibytes)
-                    }
+                if !name.hasPrefix("lo"), let data = entry.ifa_data {
+                    let networkData = data.assumingMemoryBound(to: if_data.self).pointee
+                    totalSent += UInt64(networkData.ifi_obytes)
+                    totalReceived += UInt64(networkData.ifi_ibytes)
                 }
             }
 
@@ -301,33 +273,35 @@ final class SystemStats {
 
     // MARK: - Top Processes Monitoring
 
-    /// libproc API でプロセス情報を取得（メモリ効率最適化: Top N のみ保持）
-    private func updateTopProcesses() {
+    private func updateTopProcesses(
+        elapsed: TimeInterval,
+        totalCPUUsage: Double,
+        memoryUsed: UInt64
+    ) -> (cpu: [ProcessUsage], memory: [ProcessUsage]) {
         autoreleasepool {
-            // 全PIDを取得（スタック上の固定バッファ）
             let maxPids = 2048
             let pids = UnsafeMutablePointer<pid_t>.allocate(capacity: maxPids)
             defer { pids.deallocate() }
 
-            let byteCount = proc_listpids(UInt32(PROC_ALL_PIDS), 0, pids,
-                                           Int32(maxPids * MemoryLayout<pid_t>.size))
-            guard byteCount > 0 else { return }
-            let pidCount = Int(byteCount) / MemoryLayout<pid_t>.size
+            let byteCount = proc_listpids(
+                UInt32(PROC_ALL_PIDS),
+                0,
+                pids,
+                Int32(maxPids * MemoryLayout<pid_t>.size)
+            )
+            guard byteCount > 0 else {
+                return (snapshot.topCPUProcesses, snapshot.topMemoryProcesses)
+            }
 
+            let pidCount = Int(byteCount) / MemoryLayout<pid_t>.size
             let taskInfoSize = Int32(MemoryLayout<proc_taskinfo>.size)
             let nameBuffer = UnsafeMutablePointer<CChar>.allocate(capacity: 256)
             defer { nameBuffer.deallocate() }
 
-            // Top 3 のみ保持するヒープ（全スナップショット配列を回避）
             var cpuTop3: [(pid: pid_t, name: String, pct: Double, rss: UInt64)] = []
             var memTop3: [(name: String, rss: UInt64)] = []
             var newCPUTimes: [pid_t: UInt64] = Dictionary(minimumCapacity: pidCount)
 
-            // 「その他」計算用: 全プロセスの合計を追跡
-            var totalCPUPct = 0.0
-            var totalMemRSS: UInt64 = 0
-
-            let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
             let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
 
             for i in 0..<pidCount {
@@ -335,12 +309,13 @@ final class SystemStats {
                 guard pid > 0 else { continue }
 
                 var info = proc_taskinfo()
-                guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, taskInfoSize) == taskInfoSize else { continue }
+                guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, taskInfoSize) == taskInfoSize else {
+                    continue
+                }
 
                 let cpuTime = info.pti_total_user + info.pti_total_system
                 newCPUTimes[pid] = cpuTime
 
-                // プロセス名は Top 候補の場合のみ取得（システムコール削減）
                 let rss = info.pti_resident_size
                 var cpuPct = 0.0
 
@@ -348,107 +323,122 @@ final class SystemStats {
                     cpuPct = Double(cpuTime - prev) / Double(elapsedNs) * 100.0
                 }
 
-                totalCPUPct += cpuPct
-                totalMemRSS += rss
-
                 let isTopCPU = cpuPct > 0.1 && (cpuTop3.count < 3 || cpuPct > (cpuTop3.last?.pct ?? 0))
                 let isTopMem = memTop3.count < 3 || rss > (memTop3.last?.rss ?? 0)
 
-                if isTopCPU || isTopMem {
-                    proc_name(pid, nameBuffer, 256)
-                    let name = String(cString: nameBuffer)
-                    guard !name.isEmpty else { continue }
+                guard isTopCPU || isTopMem else { continue }
 
-                    if isTopCPU {
-                        cpuTop3.append((pid, name, cpuPct, rss))
-                        cpuTop3.sort { $0.pct > $1.pct }
-                        if cpuTop3.count > 3 { cpuTop3.removeLast() }
+                proc_name(pid, nameBuffer, 256)
+                let name = String(cString: nameBuffer)
+                guard !name.isEmpty else { continue }
+
+                if isTopCPU {
+                    cpuTop3.append((pid, name, cpuPct, rss))
+                    cpuTop3.sort { $0.pct > $1.pct }
+                    if cpuTop3.count > 3 {
+                        cpuTop3.removeLast()
                     }
-                    if isTopMem {
-                        memTop3.append((name, rss))
-                        memTop3.sort { $0.rss > $1.rss }
-                        if memTop3.count > 3 { memTop3.removeLast() }
+                }
+
+                if isTopMem {
+                    memTop3.append((name, rss))
+                    memTop3.sort { $0.rss > $1.rss }
+                    if memTop3.count > 3 {
+                        memTop3.removeLast()
                     }
                 }
             }
 
             previousProcCPUTimes = newCPUTimes
 
-            // CPU: プロセスCPU%はスレッド合計(0〜N*100%)→コア数で割ってゲージスケール(0-100%)に正規化
-            let cores = Double(logicalCPUCount)
+            let cores = max(Double(logicalCPUCount), 1)
             let top3CPUSum = cpuTop3.reduce(0.0) { $0 + $1.pct }
             let normalizedTop3CPU = top3CPUSum / cores
-            let otherCPU = max(cpuUsage - normalizedTop3CPU, 0)
+            let otherCPU = max(totalCPUUsage - normalizedTop3CPU, 0)
 
-            topCPUProcesses = cpuTop3.map {
+            var cpuProcesses = cpuTop3.map {
                 ProcessUsage(name: $0.name, cpu: $0.pct / cores, memory: $0.rss)
             }
             if otherCPU > 0.1 {
-                topCPUProcesses.append(ProcessUsage(name: "その他", cpu: otherCPU, memory: 0))
+                cpuProcesses.append(ProcessUsage(name: "その他", cpu: otherCPU, memory: 0))
             }
 
-            // メモリ: ゲージ(Active+Wired+Compressed)とトップ3 RSSの差分を「その他」として表示
             let top3MemSum = memTop3.reduce(UInt64(0)) { $0 + $1.rss }
             let otherMem = memoryUsed > top3MemSum ? memoryUsed - top3MemSum : 0
 
-            topMemoryProcesses = memTop3.map {
+            var memoryProcesses = memTop3.map {
                 ProcessUsage(name: $0.name, cpu: 0, memory: $0.rss)
             }
             if otherMem > 0 {
-                topMemoryProcesses.append(ProcessUsage(name: "その他", cpu: 0, memory: otherMem))
+                memoryProcesses.append(ProcessUsage(name: "その他", cpu: 0, memory: otherMem))
             }
+
+            return (cpuProcesses, memoryProcesses)
         }
     }
 
     // MARK: - GPU Monitoring
 
-    /// GPU使用率を IOAccelerator の PerformanceStatistics から取得
-    /// CFDictionary を Swift Dictionary にコピーせず、キー単位で直接参照
-    private func updateGPUUsage() {
-        guard let matching = IOServiceMatching("IOAccelerator") else { return }
+    private func updateGPUUsage() -> Double {
+        guard let matching = IOServiceMatching("IOAccelerator") else { return snapshot.gpuUsage }
+
         var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { return }
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return snapshot.gpuUsage
+        }
         defer { IOObjectRelease(iterator) }
 
+        var result = snapshot.gpuUsage
         var service = IOIteratorNext(iterator)
+
         while service != 0 {
-            if let perfRef = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0) {
+            if let perfRef = IORegistryEntryCreateCFProperty(
+                service,
+                "PerformanceStatistics" as CFString,
+                kCFAllocatorDefault,
+                0
+            ) {
                 let cfDict = perfRef.takeRetainedValue() as! CFDictionary
+
                 func readInt(_ key: String) -> Int? {
                     let cfKey = key as CFString
-                    guard let raw = CFDictionaryGetValue(cfDict, Unmanaged.passUnretained(cfKey).toOpaque()) else { return nil }
-                    return (Unmanaged<NSNumber>.fromOpaque(raw).takeUnretainedValue()).intValue
+                    guard let raw = CFDictionaryGetValue(
+                        cfDict,
+                        Unmanaged.passUnretained(cfKey).toOpaque()
+                    ) else {
+                        return nil
+                    }
+                    return Unmanaged<NSNumber>.fromOpaque(raw).takeUnretainedValue().intValue
                 }
+
                 if let util = readInt("Device Utilization %") {
-                    gpuUsage = Double(util)
+                    result = Double(util)
                 } else if let util = readInt("GPU Activity(%)") {
-                    gpuUsage = Double(util)
+                    result = Double(util)
                 } else if let util = readInt("gpuCoreUtilizationComponent") {
-                    gpuUsage = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
+                    result = min(Double(util) / 10_000_000.0 * 100.0, 100.0)
                 }
             }
+
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
         }
-        appendHistory(&gpuHistory, value: gpuUsage)
+
+        return result
     }
 
-    /// GPUクライアント（プロセス）を IOAccelerator の直接子から取得し、
-    /// AppUsage.accumulatedGPUTime の差分からGPU使用率を算出
-    private func updateTopGPUProcesses() {
-        // PID → (プロセス名, 累積GPU時間の合計)
+    private func updateTopGPUProcesses(elapsed: TimeInterval) -> [ProcessUsage] {
         var pidInfo: [pid_t: (name: String, gpuTime: UInt64)] = [:]
-
-        let elapsed = lastUpdateTime.map { Date().timeIntervalSince($0) } ?? currentInterval
         let elapsedNs = max(UInt64(elapsed * 1_000_000_000), 1)
 
-        // IOAccelerator にマッチ（Apple Silicon の AGXAccelerator* を含む）
-        // フォールバックとして IOGPUDevice も試行
         let classNames = ["IOAccelerator", "IOGPUDevice"]
         for className in classNames {
             guard let matching = IOServiceMatching(className) else { continue }
+
             var iterator: io_iterator_t = 0
-            guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { continue }
+            guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+                continue
+            }
             defer { IOObjectRelease(iterator) }
 
             var device = IOIteratorNext(iterator)
@@ -457,8 +447,12 @@ final class SystemStats {
                 if IORegistryEntryGetChildIterator(device, kIOServicePlane, &childIter) == KERN_SUCCESS {
                     var child = IOIteratorNext(childIter)
                     while child != 0 {
-                        // IOUserClientCreator からPIDとプロセス名を取得
-                        if let creatorRef = IORegistryEntryCreateCFProperty(child, "IOUserClientCreator" as CFString, kCFAllocatorDefault, 0) {
+                        if let creatorRef = IORegistryEntryCreateCFProperty(
+                            child,
+                            "IOUserClientCreator" as CFString,
+                            kCFAllocatorDefault,
+                            0
+                        ) {
                             let creator = creatorRef.takeRetainedValue() as! String
                             let comps = creator.split(separator: ",", maxSplits: 1)
                             if comps.count >= 2,
@@ -466,9 +460,13 @@ final class SystemStats {
                                let pid = pid_t(pidStr) {
                                 let name = String(comps[1]).trimmingCharacters(in: .whitespaces)
 
-                                // AppUsage から accumulatedGPUTime を抽出
                                 var clientGPUTime: UInt64 = 0
-                                if let usageRef = IORegistryEntryCreateCFProperty(child, "AppUsage" as CFString, kCFAllocatorDefault, 0) {
+                                if let usageRef = IORegistryEntryCreateCFProperty(
+                                    child,
+                                    "AppUsage" as CFString,
+                                    kCFAllocatorDefault,
+                                    0
+                                ) {
                                     if let usageArray = usageRef.takeRetainedValue() as? [[String: Any]] {
                                         for entry in usageArray {
                                             if let t = entry["accumulatedGPUTime"] as? UInt64 {
@@ -485,20 +483,23 @@ final class SystemStats {
                                 pidInfo[pid] = existing
                             }
                         }
+
                         IOObjectRelease(child)
                         child = IOIteratorNext(childIter)
                     }
                     IOObjectRelease(childIter)
                 }
+
                 IOObjectRelease(device)
                 device = IOIteratorNext(iterator)
             }
-            if !pidInfo.isEmpty { break }
+
+            if !pidInfo.isEmpty {
+                break
+            }
         }
 
         let selfPID = ProcessInfo.processInfo.processIdentifier
-
-        // 差分からGPU使用率(%)を計算してソート
         var gpuProcesses: [(name: String, gpuPct: Double)] = []
         var newGPUTimes: [pid_t: UInt64] = [:]
 
@@ -513,7 +514,7 @@ final class SystemStats {
 
         previousGPUTimes = newGPUTimes
 
-        topGPUProcesses = gpuProcesses
+        return gpuProcesses
             .sorted { $0.gpuPct > $1.gpuPct }
             .prefix(3)
             .map { ProcessUsage(name: $0.name, cpu: $0.gpuPct, memory: 0) }
@@ -521,15 +522,189 @@ final class SystemStats {
 
     // MARK: - Helpers
 
-    /// 固定長60の履歴に追加（末尾上書き + 先頭シフトで O(1) 書き込み）
     private func appendHistory(_ history: inout [Double], value: Double) {
         if history.count >= 60 {
-            history.replaceSubrange(0..<59, with: history[1..<60])
-            history[59] = value
-        } else {
-            history.append(value)
+            history.removeFirst()
+        }
+        history.append(value)
+    }
+}
+
+// MARK: - Observable UI Model
+
+@MainActor
+@Observable
+final class SystemStats {
+    private var snapshot: MonitoringSnapshot
+    var speedUnit: SpeedUnit = .megabytes
+
+    @ObservationIgnored private let sampler: SystemSampler
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
+    @ObservationIgnored private var currentInterval: Double = 2.0
+    @ObservationIgnored private var detailMonitoringEnabled = false
+    @ObservationIgnored private var showGPUInMenuBar = false
+
+    // MARK: - CPU
+
+    var cpuUsage: Double { snapshot.cpuUsage }
+    var cpuHistory: [Double] { snapshot.cpuHistory }
+
+    // MARK: - Memory
+
+    var memoryUsed: UInt64 { snapshot.memoryUsed }
+    var memoryTotal: UInt64 { snapshot.memoryTotal }
+    var memoryPercent: Double { snapshot.memoryPercent }
+    var memoryHistory: [Double] { snapshot.memoryHistory }
+
+    // MARK: - Network
+
+    var networkUpSpeed: UInt64 { snapshot.networkUpSpeed }
+    var networkDownSpeed: UInt64 { snapshot.networkDownSpeed }
+    var uploadHistory: [Double] { snapshot.uploadHistory }
+    var downloadHistory: [Double] { snapshot.downloadHistory }
+
+    // MARK: - GPU
+
+    var gpuUsage: Double { snapshot.gpuUsage }
+    var gpuHistory: [Double] { snapshot.gpuHistory }
+
+    // MARK: - Top Processes
+
+    var topCPUProcesses: [ProcessUsage] { snapshot.topCPUProcesses }
+    var topMemoryProcesses: [ProcessUsage] { snapshot.topMemoryProcesses }
+    var topGPUProcesses: [ProcessUsage] { snapshot.topGPUProcesses }
+
+    // MARK: - Menu Bar
+
+    var menuBarText: String {
+        let cpu = String(format: "CPU %2.0f%%", cpuUsage)
+        let mem = String(format: "MEM %2.0f%%", memoryPercent)
+        let up = "↑\(Self.formatSpeed(networkUpSpeed, unit: speedUnit))"
+        let dn = "↓\(Self.formatSpeed(networkDownSpeed, unit: speedUnit))"
+        return "\(cpu)  \(mem)  \(up) \(dn)"
+    }
+
+    // MARK: - Lifecycle
+
+    init() {
+        let memoryTotal = ProcessInfo.processInfo.physicalMemory
+        snapshot = MonitoringSnapshot(memoryTotal: memoryTotal)
+        sampler = SystemSampler(memoryTotal: memoryTotal)
+
+        syncSettings()
+        startMonitoring()
+
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.syncSettings()
+            }
         }
     }
+
+    deinit {
+        refreshTask?.cancel()
+        if let observer = defaultsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    // MARK: - Visibility
+
+    func setDetailMonitoringEnabled(_ enabled: Bool) {
+        guard detailMonitoringEnabled != enabled else { return }
+
+        detailMonitoringEnabled = enabled
+        if enabled {
+            scheduleImmediateRefresh(withFollowUp: true)
+        }
+    }
+
+    // MARK: - Settings Sync
+
+    private func syncSettings() {
+        let unitRaw = UserDefaults.standard.string(forKey: "speedUnit") ?? SpeedUnit.megabytes.rawValue
+        let newSpeedUnit = SpeedUnit(rawValue: unitRaw) ?? .megabytes
+        let newShowGPU = UserDefaults.standard.bool(forKey: "showGPU")
+
+        let storedInterval = UserDefaults.standard.double(forKey: "updateInterval")
+        let newInterval = storedInterval > 0 ? storedInterval : 2.0
+
+        let intervalChanged = newInterval != currentInterval
+        let gpuVisibilityChanged = newShowGPU != showGPUInMenuBar
+
+        if speedUnit != newSpeedUnit {
+            speedUnit = newSpeedUnit
+        }
+        showGPUInMenuBar = newShowGPU
+        currentInterval = newInterval
+
+        if intervalChanged {
+            startMonitoring()
+        } else if gpuVisibilityChanged {
+            scheduleImmediateRefresh(withFollowUp: detailMonitoringEnabled)
+        }
+    }
+
+    // MARK: - Monitoring
+
+    private var samplingOptions: MonitoringOptions {
+        MonitoringOptions(
+            includeGPU: detailMonitoringEnabled || showGPUInMenuBar,
+            includeProcessDetails: detailMonitoringEnabled
+        )
+    }
+
+    private func startMonitoring() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runRefreshLoop()
+        }
+        scheduleImmediateRefresh(withFollowUp: detailMonitoringEnabled)
+    }
+
+    private func runRefreshLoop() async {
+        while !Task.isCancelled {
+            let sleepNs = max(UInt64(currentInterval * 1_000_000_000), 100_000_000)
+            do {
+                try await Task.sleep(nanoseconds: sleepNs)
+            } catch {
+                break
+            }
+
+            if Task.isCancelled {
+                break
+            }
+
+            await refreshNow()
+        }
+    }
+
+    private func scheduleImmediateRefresh(withFollowUp: Bool = false) {
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshNow()
+
+            guard withFollowUp else { return }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled, self.detailMonitoringEnabled else { return }
+            await self.refreshNow()
+        }
+    }
+
+    private func refreshNow() async {
+        snapshot = await sampler.captureSample(
+            intervalHint: currentInterval,
+            options: samplingOptions
+        )
+    }
+
+    // MARK: - Format Helpers
 
     static func formatSpeedAuto(_ bytesPerSec: UInt64) -> String {
         let b = Double(bytesPerSec)
@@ -566,6 +741,7 @@ final class SystemStats {
         if gb >= 1.0 {
             return String(format: "%.1f GB", gb)
         }
+
         let mb = Double(bytes) / 1_048_576
         return String(format: "%.0f MB", mb)
     }

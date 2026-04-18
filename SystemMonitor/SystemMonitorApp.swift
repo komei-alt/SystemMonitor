@@ -27,23 +27,43 @@ struct SystemMonitorApp: App {
     }
 }
 
-// MARK: - SF Symbol キャッシュ
+// MARK: - Menu Bar Image Cache
 
-private enum SymbolCache {
-    static var cache: [String: NSImage] = [:]
+private struct MenuBarRenderKey: Hashable {
+    let appearanceName: String
+    let menuBarSizeRaw: String
+    let cpuColorName: String
+    let memoryColorName: String
+    let gpuColorName: String
+    let netUpColorName: String
+    let netDownColorName: String
+    let showCPU: Bool
+    let showRAM: Bool
+    let showGPU: Bool
+    let showNetwork: Bool
+    let cpuValue: String
+    let memoryValue: String
+    let gpuValue: String
+    let upValue: String
+    let downValue: String
+}
 
-    static func symbol(_ name: String, size: CGFloat, color: NSColor) -> NSImage? {
-        let key = "\(name)-\(size)-\(color)"
-        if let cached = cache[key] { return cached }
-        let config = NSImage.SymbolConfiguration(pointSize: size, weight: .medium)
-            .applying(.init(paletteColors: [color]))
-        guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(config) else { return nil }
-        cache[key] = img
-        return img
+private enum MenuBarImageCache {
+    static var cache: [MenuBarRenderKey: NSImage] = [:]
+
+    static func image(for key: MenuBarRenderKey, render: () -> NSImage) -> NSImage {
+        if let cached = cache[key] {
+            return cached
+        }
+
+        if cache.count > 64 {
+            cache.removeAll(keepingCapacity: true)
+        }
+
+        let image = render()
+        cache[key] = image
+        return image
     }
-
-    static func invalidate() { cache.removeAll() }
 }
 
 // MARK: - 即時ラスタライズ（クロージャ保持によるメモリリーク防止）
@@ -93,11 +113,6 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(nsImage: renderImage())
-            .onChange(of: cpuColorName)     { _, _ in SymbolCache.invalidate() }
-            .onChange(of: memoryColorName)  { _, _ in SymbolCache.invalidate() }
-            .onChange(of: netUpColorName)   { _, _ in SymbolCache.invalidate() }
-            .onChange(of: netDownColorName) { _, _ in SymbolCache.invalidate() }
-            .onChange(of: menuBarSizeRaw)   { _, _ in SymbolCache.invalidate() }
     }
 
     private func renderImage() -> NSImage {
@@ -118,6 +133,11 @@ struct MenuBarLabel: View {
         let gpuVal  = String(format: "%2.0f%%", stats.gpuUsage).replacingOccurrences(of: " ", with: fig)
         let upVal   = SystemStats.formatSpeed(stats.networkUpSpeed, unit: stats.speedUnit)
         let downVal = SystemStats.formatSpeed(stats.networkDownSpeed, unit: stats.speedUnit)
+        let compactUpVal = SystemStats.formatSpeedAuto(stats.networkUpSpeed)
+        let compactDownVal = SystemStats.formatSpeedAuto(stats.networkDownSpeed)
+        let renderedUpVal = isCompact ? compactUpVal : upVal
+        let renderedDownVal = isCompact ? compactDownVal : downVal
+        let appearanceName = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? "unknown"
 
         // 共通トグル
         let itemCPU = showCPU
@@ -125,157 +145,177 @@ struct MenuBarLabel: View {
         let itemGPU = showGPU
         let itemNet = showNetwork
 
-        if !isCompact {
-            if !itemCPU && !itemRAM && !itemGPU && !itemNet {
+        let renderKey = MenuBarRenderKey(
+            appearanceName: appearanceName,
+            menuBarSizeRaw: menuBarSizeRaw,
+            cpuColorName: cpuColorName,
+            memoryColorName: memoryColorName,
+            gpuColorName: gpuColorName,
+            netUpColorName: netUpColorName,
+            netDownColorName: netDownColorName,
+            showCPU: itemCPU,
+            showRAM: itemRAM,
+            showGPU: itemGPU,
+            showNetwork: itemNet,
+            cpuValue: cpuVal,
+            memoryValue: memVal,
+            gpuValue: gpuVal,
+            upValue: renderedUpVal,
+            downValue: renderedDownVal
+        )
+
+        return MenuBarImageCache.image(for: renderKey) {
+            if !isCompact {
+                if !itemCPU && !itemRAM && !itemGPU && !itemNet {
+                    return NSImage(size: NSSize(width: 1, height: 1))
+                }
+                let labelFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
+                let labelColor = NSColor.secondaryLabelColor
+                let str = NSMutableAttributedString()
+                func lbl(_ t: String) {
+                    str.append(NSAttributedString(string: t, attributes: [.font: labelFont, .foregroundColor: labelColor]))
+                }
+                func val(_ t: String, _ c: NSColor) {
+                    str.append(NSAttributedString(string: t, attributes: [.font: valueFont, .foregroundColor: c]))
+                }
+                func sep() { if str.length > 0 { lbl(" ") } }
+                if itemCPU { sep(); lbl("CPU "); val(cpuVal, cpuNS) }
+                if itemRAM { sep(); lbl("MEM "); val(memVal, memNS) }
+                if itemGPU { sep(); lbl("GPU "); val(gpuVal, gpuNS) }
+                if itemNet { sep(); lbl("↑"); val(upVal, upNS); lbl(" ↓"); val(downVal, downNS) }
+
+                let size = str.size()
+                let imgSize = NSSize(width: ceil(size.width), height: ceil(size.height))
+                return rasterize(size: imgSize) { str.draw(at: .zero) }
+            }
+
+            // コンパクト: 多段レイアウト（選択項目 + ネットワーク速度）
+            let showNet = itemNet
+
+            if !itemCPU && !itemRAM && !itemGPU && !showNet {
                 return NSImage(size: NSSize(width: 1, height: 1))
             }
-            let labelFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
+            // バー項目数に応じてサイズを自動調整（2行: 9pt, 3行: 7pt）
+            struct BarItem {
+                let label: NSAttributedString
+                let fill: Double
+                let color: NSColor
+            }
+
+            // 表示ON の項目をカウントしてフォント決定
+            let barCount = [itemCPU, itemRAM, itemGPU].filter { $0 }.count
+            let maxRows = min(barCount, 3)
+            let smallSize: CGFloat = maxRows >= 3 ? 7 : 9
+            let lblFont = NSFont.systemFont(ofSize: smallSize, weight: .semibold)
+            let spdFont = NSFont.monospacedDigitSystemFont(ofSize: smallSize, weight: .medium)
             let labelColor = NSColor.secondaryLabelColor
-            let str = NSMutableAttributedString()
-            func lbl(_ t: String) {
-                str.append(NSAttributedString(string: t, attributes: [.font: labelFont, .foregroundColor: labelColor]))
+
+            let barW: CGFloat = maxRows >= 3 ? 30 : 36
+            let barH: CGFloat = maxRows >= 3 ? 4 : 5
+            let pad: CGFloat = 4
+
+            let upStr = "↑" + compactUpVal
+            let downStr = "↓" + compactDownVal
+            let upAttr = NSAttributedString(string: upStr, attributes: [.font: spdFont, .foregroundColor: upNS])
+            let downAttr = NSAttributedString(string: downStr, attributes: [.font: spdFont, .foregroundColor: downNS])
+
+            // バー項目を構築（CPU / RAM / GPU）→ 最大3行
+            var barItems: [BarItem] = []
+            if itemCPU {
+                barItems.append(BarItem(
+                    label: NSAttributedString(string: "CPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
+                    fill: stats.cpuUsage / 100, color: cpuNS))
             }
-            func val(_ t: String, _ c: NSColor) {
-                str.append(NSAttributedString(string: t, attributes: [.font: valueFont, .foregroundColor: c]))
+            if itemRAM {
+                barItems.append(BarItem(
+                    label: NSAttributedString(string: "RAM ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
+                    fill: stats.memoryPercent / 100, color: memNS))
             }
-            func sep() { if str.length > 0 { lbl(" ") } }
-            if itemCPU { sep(); lbl("CPU "); val(cpuVal, cpuNS) }
-            if itemRAM { sep(); lbl("MEM "); val(memVal, memNS) }
-            if itemGPU { sep(); lbl("GPU "); val(gpuVal, gpuNS) }
-            if itemNet { sep(); lbl("↑"); val(upVal, upNS); lbl(" ↓"); val(downVal, downNS) }
+            if itemGPU {
+                barItems.append(BarItem(
+                    label: NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
+                    fill: stats.gpuUsage / 100, color: gpuNS))
+            }
+            barItems = Array(barItems.prefix(3))
 
-            let size = str.size()
-            let imgSize = NSSize(width: ceil(size.width), height: ceil(size.height))
-            return rasterize(size: imgSize) { str.draw(at: .zero) }
-        }
+            // 行データ
+            struct RowInfo {
+                var label: NSAttributedString?
+                var barFill: Double?
+                var barColor: NSColor?
+                var speed: NSAttributedString?
+            }
 
-        // コンパクト: 多段レイアウト（選択項目 + ネットワーク速度）
-        let showNet = itemNet
+            var rows: [RowInfo] = []
+            // ネットワーク速度は先頭2行の右側に配置
+            let speeds: [NSAttributedString?] = showNet ? [upAttr, downAttr] : [nil, nil]
 
-        if !itemCPU && !itemRAM && !itemGPU && !showNet {
-            return NSImage(size: NSSize(width: 1, height: 1))
-        }
+            for (i, item) in barItems.enumerated() {
+                rows.append(RowInfo(label: item.label, barFill: item.fill,
+                                    barColor: item.color, speed: i < 2 ? speeds[i] : nil))
+            }
+            // バー項目なし + ネットワークのみ
+            if barItems.isEmpty && showNet {
+                rows.append(RowInfo(speed: upAttr))
+                rows.append(RowInfo(speed: downAttr))
+            }
+            // バー項目1つ + ネットワークの↓が未配置
+            if barItems.count == 1 && showNet {
+                rows.append(RowInfo(speed: downAttr))
+            }
 
-        // バー項目数に応じてサイズを自動調整（2行: 9pt, 3行: 7pt）
-        struct BarItem {
-            let label: NSAttributedString
-            let fill: Double
-            let color: NSColor
-        }
+            // サイズ計算
+            let sampleLbl = NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor])
+            let rowH = max(sampleLbl.size().height, upAttr.size().height)
+            let rowGap: CGFloat = rows.count > 1 ? 0 : 0
+            let totalH = rowH * CGFloat(rows.count) + rowGap * CGFloat(max(rows.count - 1, 0))
 
-        // 表示ON の項目をカウントしてフォント決定
-        let barCount = [itemCPU, itemRAM, itemGPU].filter { $0 }.count
-        let maxRows = min(barCount, 3)
-        let smallSize: CGFloat = maxRows >= 3 ? 7 : 9
-        let lblFont = NSFont.systemFont(ofSize: smallSize, weight: .semibold)
-        let spdFont = NSFont.monospacedDigitSystemFont(ofSize: smallSize, weight: .medium)
-        let labelColor = NSColor.secondaryLabelColor
+            let hasLabel = rows.contains(where: { $0.label != nil })
+            let hasBar = rows.contains(where: { $0.barFill != nil })
+            let hasSpeed = rows.contains(where: { $0.speed != nil })
 
-        let barW: CGFloat = maxRows >= 3 ? 30 : 36
-        let barH: CGFloat = maxRows >= 3 ? 4 : 5
-        let pad: CGFloat = 4
+            let lblW: CGFloat = hasLabel
+                ? rows.compactMap { $0.label?.size().width }.max() ?? 0
+                : 0
+            let spdW: CGFloat = hasSpeed ? max(upAttr.size().width, downAttr.size().width) : 0
 
-        let upStr = "↑" + SystemStats.formatSpeedAuto(stats.networkUpSpeed)
-        let downStr = "↓" + SystemStats.formatSpeedAuto(stats.networkDownSpeed)
-        let upAttr = NSAttributedString(string: upStr, attributes: [.font: spdFont, .foregroundColor: upNS])
-        let downAttr = NSAttributedString(string: downStr, attributes: [.font: spdFont, .foregroundColor: downNS])
+            var totalW: CGFloat = lblW
+            if hasBar { totalW += barW }
+            if spdW > 0 {
+                if totalW > 0 { totalW += pad }
+                totalW += spdW
+            }
 
-        // バー項目を構築（CPU / RAM / GPU）→ 最大3行
-        var barItems: [BarItem] = []
-        if itemCPU {
-            barItems.append(BarItem(
-                label: NSAttributedString(string: "CPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
-                fill: stats.cpuUsage / 100, color: cpuNS))
-        }
-        if itemRAM {
-            barItems.append(BarItem(
-                label: NSAttributedString(string: "RAM ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
-                fill: stats.memoryPercent / 100, color: memNS))
-        }
-        if itemGPU {
-            barItems.append(BarItem(
-                label: NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor]),
-                fill: stats.gpuUsage / 100, color: gpuNS))
-        }
-        barItems = Array(barItems.prefix(3))
+            let imgSize = NSSize(width: ceil(totalW), height: ceil(totalH))
 
-        // 行データ
-        struct RowInfo {
-            var label: NSAttributedString?
-            var barFill: Double?
-            var barColor: NSColor?
-            var speed: NSAttributedString?
-        }
+            return rasterize(size: imgSize) {
+                for (i, row) in rows.enumerated() {
+                    let y = totalH - rowH * CGFloat(i + 1) - rowGap * CGFloat(i)
+                    var x: CGFloat = 0
 
-        var rows: [RowInfo] = []
-        // ネットワーク速度は先頭2行の右側に配置
-        let speeds: [NSAttributedString?] = showNet ? [upAttr, downAttr] : [nil, nil]
-
-        for (i, item) in barItems.enumerated() {
-            rows.append(RowInfo(label: item.label, barFill: item.fill,
-                                barColor: item.color, speed: i < 2 ? speeds[i] : nil))
-        }
-        // バー項目なし + ネットワークのみ
-        if barItems.isEmpty && showNet {
-            rows.append(RowInfo(speed: upAttr))
-            rows.append(RowInfo(speed: downAttr))
-        }
-        // バー項目1つ + ネットワークの↓が未配置
-        if barItems.count == 1 && showNet {
-            rows.append(RowInfo(speed: downAttr))
-        }
-
-        // サイズ計算
-        let sampleLbl = NSAttributedString(string: "GPU ", attributes: [.font: lblFont, .foregroundColor: labelColor])
-        let rowH = max(sampleLbl.size().height, upAttr.size().height)
-        let rowGap: CGFloat = rows.count > 1 ? 0 : 0
-        let totalH = rowH * CGFloat(rows.count) + rowGap * CGFloat(max(rows.count - 1, 0))
-
-        let hasLabel = rows.contains(where: { $0.label != nil })
-        let hasBar = rows.contains(where: { $0.barFill != nil })
-        let hasSpeed = rows.contains(where: { $0.speed != nil })
-
-        let lblW: CGFloat = hasLabel
-            ? rows.compactMap { $0.label?.size().width }.max() ?? 0
-            : 0
-        let spdW: CGFloat = hasSpeed ? max(upAttr.size().width, downAttr.size().width) : 0
-
-        var totalW: CGFloat = lblW
-        if hasBar { totalW += barW }
-        if spdW > 0 {
-            if totalW > 0 { totalW += pad }
-            totalW += spdW
-        }
-
-        let imgSize = NSSize(width: ceil(totalW), height: ceil(totalH))
-
-        return rasterize(size: imgSize) {
-            for (i, row) in rows.enumerated() {
-                let y = totalH - rowH * CGFloat(i + 1) - rowGap * CGFloat(i)
-                var x: CGFloat = 0
-
-                if let label = row.label {
-                    label.draw(at: NSPoint(x: x, y: y))
-                }
-                x = lblW
-
-                if let fill = row.barFill, let color = row.barColor {
-                    let barY = y + (rowH - barH) / 2
-                    let bgRect = NSRect(x: x, y: barY, width: barW, height: barH)
-                    NSColor.quaternaryLabelColor.setFill()
-                    NSBezierPath(roundedRect: bgRect, xRadius: 2, yRadius: 2).fill()
-                    let fw = barW * CGFloat(min(max(fill, 0), 1))
-                    if fw > 0 {
-                        let fRect = NSRect(x: x, y: barY, width: fw, height: barH)
-                        color.setFill()
-                        NSBezierPath(roundedRect: fRect, xRadius: 2, yRadius: 2).fill()
+                    if let label = row.label {
+                        label.draw(at: NSPoint(x: x, y: y))
                     }
-                }
-                if hasBar { x += barW }
+                    x = lblW
 
-                if let speed = row.speed {
-                    if x > 0 { x += pad }
-                    speed.draw(at: NSPoint(x: x, y: y))
+                    if let fill = row.barFill, let color = row.barColor {
+                        let barY = y + (rowH - barH) / 2
+                        let bgRect = NSRect(x: x, y: barY, width: barW, height: barH)
+                        NSColor.quaternaryLabelColor.setFill()
+                        NSBezierPath(roundedRect: bgRect, xRadius: 2, yRadius: 2).fill()
+                        let fw = barW * CGFloat(min(max(fill, 0), 1))
+                        if fw > 0 {
+                            let fRect = NSRect(x: x, y: barY, width: fw, height: barH)
+                            color.setFill()
+                            NSBezierPath(roundedRect: fRect, xRadius: 2, yRadius: 2).fill()
+                        }
+                    }
+                    if hasBar { x += barW }
+
+                    if let speed = row.speed {
+                        if x > 0 { x += pad }
+                        speed.draw(at: NSPoint(x: x, y: y))
+                    }
                 }
             }
         }
