@@ -247,8 +247,11 @@ struct MonitorPopoverView: View {
             .font(.caption2)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+            )
             .fixedSize()
             .offset(y: -24)
             .allowsHitTesting(false)
@@ -426,7 +429,7 @@ struct MonitorPopoverView: View {
             .buttonStyle(.plain)
             .foregroundStyle(showSettings ? .primary : .secondary)
 
-            Text("\(Int(updateInterval))秒ごとに更新")
+            Text("\(Int(stats.displayRefreshInterval))秒ごとに更新")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
@@ -453,14 +456,13 @@ struct InlineColorPicker: View {
         HStack(spacing: 5) {
             ForEach(ThemeColor.allCases) { theme in
                 Circle()
-                    .fill(theme.color.gradient)
+                    .fill(theme.color)
                     .frame(width: 16, height: 16)
                     .overlay(
                         Circle()
                             .strokeBorder(.white.opacity(0.9), lineWidth: 2)
                             .opacity(selection == theme.rawValue ? 1 : 0)
                     )
-                    .shadow(color: selection == theme.rawValue ? theme.color.opacity(0.5) : .clear, radius: 3)
                     .scaleEffect(selection == theme.rawValue ? 1.15 : 1.0)
                     .animation(.easeInOut(duration: 0.15), value: selection)
                     .onTapGesture { selection = theme.rawValue }
@@ -561,11 +563,13 @@ struct GaugeBar: View {
                     .fill(.quaternary)
 
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(color.gradient)
+                    .fill(color)
                     .frame(width: geo.size.width * min(max(value, 0), 1))
-                    .animation(.easeInOut(duration: 0.6), value: value)
             }
         }
         .frame(height: 8)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }

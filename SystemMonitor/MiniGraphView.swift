@@ -9,11 +9,12 @@ struct MiniGraphView: View {
     var body: some View {
         ZStack {
             GraphAreaShape(data: data, maxValue: resolvedMax)
-                .fill(.linearGradient(
-                    colors: [color.opacity(0.25), color.opacity(0.03)],
-                    startPoint: .top, endPoint: .bottom))
+                .fill(color.opacity(0.08))
             GraphLineShape(data: data, maxValue: resolvedMax)
                 .stroke(color, lineWidth: 1.5)
+        }
+        .transaction { transaction in
+            transaction.animation = nil
         }
     }
 
