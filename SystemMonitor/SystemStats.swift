@@ -73,6 +73,8 @@ private actor SystemSampler {
     private var previousGPUTimes: [pid_t: UInt64] = [:]
     private var previousNetworkBytes: (sent: UInt64, received: UInt64)?
     private var lastUpdateTime: Date?
+    private var lastGPUUpdateTime: Date?
+    private let minimumGPUUpdateInterval: TimeInterval = 5.0
 
     init(memoryTotal: UInt64) {
         snapshot = MonitoringSnapshot(memoryTotal: memoryTotal)
@@ -97,7 +99,10 @@ private actor SystemSampler {
             appendHistory(&snapshot.uploadHistory, value: Double(snapshot.networkUpSpeed))
             appendHistory(&snapshot.downloadHistory, value: Double(snapshot.networkDownSpeed))
 
-            if options.includeGPU {
+            let shouldUpdateGPU = options.includeGPU && shouldRefreshGPU(now: now)
+            let gpuElapsed = max(lastGPUUpdateTime.map { now.timeIntervalSince($0) } ?? intervalHint, 0.1)
+
+            if shouldUpdateGPU {
                 snapshot.gpuUsage = updateGPUUsage()
                 appendHistory(&snapshot.gpuHistory, value: snapshot.gpuUsage)
             }
@@ -110,9 +115,9 @@ private actor SystemSampler {
                 )
                 snapshot.topCPUProcesses = processes.cpu
                 snapshot.topMemoryProcesses = processes.memory
-                snapshot.topGPUProcesses = options.includeGPU
-                    ? updateTopGPUProcesses(elapsed: elapsed)
-                    : []
+                snapshot.topGPUProcesses = shouldUpdateGPU
+                    ? updateTopGPUProcesses(elapsed: gpuElapsed)
+                    : (options.includeGPU ? snapshot.topGPUProcesses : [])
             } else {
                 snapshot.topCPUProcesses = []
                 snapshot.topMemoryProcesses = []
@@ -123,11 +128,19 @@ private actor SystemSampler {
 
             if !options.includeGPU {
                 previousGPUTimes.removeAll(keepingCapacity: true)
+                lastGPUUpdateTime = nil
+            } else if shouldUpdateGPU {
+                lastGPUUpdateTime = now
             }
 
             lastUpdateTime = now
             return snapshot
         }
+    }
+
+    private func shouldRefreshGPU(now: Date) -> Bool {
+        guard let lastGPUUpdateTime else { return true }
+        return now.timeIntervalSince(lastGPUUpdateTime) >= minimumGPUUpdateInterval
     }
 
     // MARK: - CPU Monitoring

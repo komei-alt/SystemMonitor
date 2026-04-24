@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MonitorPopoverView: View {
     var stats: SystemStats
@@ -67,6 +68,11 @@ struct MonitorPopoverView: View {
         }
         .onDisappear {
             stats.setDetailMonitoringEnabled(false)
+        }
+        .background {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
+            PopoverWindowConfigurator()
         }
     }
 
@@ -221,7 +227,7 @@ struct MonitorPopoverView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .panelBackground()
     }
 
     /// プロセス名 + ホバーツールチップ（型チェック分割用）
@@ -338,7 +344,7 @@ struct MonitorPopoverView: View {
             }
         }
         .padding(14)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .panelBackground()
     }
 
     private func speedLabel(icon: String, speed: UInt64, color: Color) -> some View {
@@ -411,7 +417,7 @@ struct MonitorPopoverView: View {
                 .font(.caption)
         }
         .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .panelBackground()
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
@@ -546,7 +552,7 @@ struct MetricCard: View {
                 .frame(height: 36)
         }
         .padding(14)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .panelBackground()
     }
 }
 
@@ -571,5 +577,45 @@ struct GaugeBar: View {
         .transaction { transaction in
             transaction.animation = nil
         }
+    }
+}
+
+// MARK: - Compositor Load Reduction
+
+private struct PopoverWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        configureWhenReady(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configureWhenReady(nsView)
+    }
+
+    private func configureWhenReady(_ view: NSView) {
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.isOpaque = true
+            window.backgroundColor = .windowBackgroundColor
+            window.hasShadow = false
+        }
+    }
+}
+
+private struct PanelBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            )
+    }
+}
+
+private extension View {
+    func panelBackground() -> some View {
+        modifier(PanelBackgroundModifier())
     }
 }
