@@ -557,7 +557,6 @@ final class SystemStats {
     @ObservationIgnored private var currentInterval: Double = 2.0
     @ObservationIgnored private var detailMonitoringEnabled = false
     @ObservationIgnored private var showGPUInMenuBar = false
-    @ObservationIgnored private let minimumDetailRefreshInterval = 2.0
     @ObservationIgnored private let detailWarmupDelay: UInt64 = 1_200_000_000
 
     // MARK: - CPU
@@ -598,10 +597,6 @@ final class SystemStats {
         let up = "↑\(Self.formatSpeed(networkUpSpeed, unit: speedUnit))"
         let dn = "↓\(Self.formatSpeed(networkDownSpeed, unit: speedUnit))"
         return "\(cpu)  \(mem)  \(up) \(dn)"
-    }
-
-    var displayRefreshInterval: Double {
-        effectiveRefreshInterval
     }
 
     // MARK: - Lifecycle
@@ -678,12 +673,6 @@ final class SystemStats {
         )
     }
 
-    private var effectiveRefreshInterval: Double {
-        detailMonitoringEnabled
-            ? max(currentInterval, minimumDetailRefreshInterval)
-            : currentInterval
-    }
-
     private func startMonitoring() {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
@@ -695,7 +684,7 @@ final class SystemStats {
 
     private func runRefreshLoop() async {
         while !Task.isCancelled {
-            let sleepNs = max(UInt64(effectiveRefreshInterval * 1_000_000_000), 100_000_000)
+            let sleepNs = max(UInt64(currentInterval * 1_000_000_000), 100_000_000)
             do {
                 try await Task.sleep(nanoseconds: sleepNs)
             } catch {
@@ -724,7 +713,7 @@ final class SystemStats {
 
     private func refreshNow() async {
         snapshot = await sampler.captureSample(
-            intervalHint: effectiveRefreshInterval,
+            intervalHint: currentInterval,
             options: samplingOptions
         )
     }

@@ -435,7 +435,7 @@ struct MonitorPopoverView: View {
             .buttonStyle(.plain)
             .foregroundStyle(showSettings ? .primary : .secondary)
 
-            Text("\(Int(stats.displayRefreshInterval))秒ごとに更新")
+            Text("\(Int(updateInterval))秒ごとに更新")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
