@@ -1,0 +1,13 @@
+# RSDM Auto-Heal project configuration for the native macOS SystemMonitor app.
+# There is no test target in this Xcode project; build is the canonical gate.
+
+project:
+  name: SystemMonitor
+  project_title: SystemMonitor
+  verify_commands:
+    - "xcodebuild -list -project SystemMonitor.xcodeproj"
+    - "xcodebuild build -project SystemMonitor.xcodeproj -scheme SystemMonitor -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO"
+
+rsdm:
+  auto_heal:
+    enabled: true
